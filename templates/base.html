@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Discord Bot Dashboard{% endblock %}</title>
+    <link href="https://cdn.replit.com/agent/bootstrap-agent-dark-theme.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        .sidebar {
+            min-height: 100vh;
+            background: var(--bs-dark);
+        }
+        .nav-link {
+            color: var(--bs-light);
+            border-radius: 0.5rem;
+            margin: 0.2rem 0;
+        }
+        .nav-link:hover, .nav-link.active {
+            background: var(--bs-primary);
+            color: white;
+        }
+        .status-online {
+            color: var(--bs-success);
+        }
+        .status-offline {
+            color: var(--bs-danger);
+        }
+        .card {
+            border: none;
+            box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
+        }
+        .metric-card {
+            transition: transform 0.2s;
+        }
+        .metric-card:hover {
+            transform: translateY(-2px);
+        }
+        .warning-item {
+            border-left: 4px solid var(--bs-warning);
+            background: rgba(var(--bs-warning-rgb), 0.1);
+        }
+        .bot-badge {
+            font-size: 0.75rem;
+            padding: 0.25rem 0.5rem;
+        }
+        .guild-icon {
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            object-fit: cover;
+        }
+        .dashboard-header {
+            background: linear-gradient(135deg, var(--bs-primary), var(--bs-info));
+            color: white;
+            padding: 2rem 0;
+            margin-bottom: 2rem;
+        }
+        .auto-refresh {
+            animation: spin 2s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body data-bs-theme="dark">
+    <div class="container-fluid">
+        <div class="row">
+            <!-- Sidebar -->
+            <nav class="col-md-3 col-lg-2 d-md-block sidebar collapse">
+                <div class="position-sticky pt-3">
+                    <div class="text-center mb-4">
+                        <i class="fas fa-shield-alt fa-3x text-primary mb-3"></i>
+                        <h5>Popocorp Bot</h5>
+                        <span id="bot-status" class="badge bg-success">
+                            <i class="fas fa-circle me-1"></i>Online
+                        </span>
+                    </div>
+                    
+                    <ul class="nav nav-pills flex-column mb-auto">
+                        <li class="nav-item">
+                            <a href="{{ url_for('dashboard') }}" class="nav-link {% if request.endpoint == 'dashboard' %}active{% endif %}">
+                                <i class="fas fa-tachometer-alt me-2"></i>Dashboard
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a href="{{ url_for('warnings_page') }}" class="nav-link {% if request.endpoint == 'warnings_page' %}active{% endif %}">
+                                <i class="fas fa-exclamation-triangle me-2"></i>Warnings
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a href="{{ url_for('guilds_page') }}" class="nav-link {% if request.endpoint == 'guilds_page' %}active{% endif %}">
+                                <i class="fas fa-server me-2"></i>Servers
+                            </a>
+                        </li>
+                    </ul>
+                    
+                    <div class="mt-auto pt-3 border-top">
+                        <small class="text-muted d-block mb-2">Last Updated</small>
+                        <small id="last-update" class="text-info">Just now</small>
+                        <br>
+                        <button class="btn btn-sm btn-outline-primary mt-2" onclick="refreshData()">
+                            <i id="refresh-icon" class="fas fa-sync-alt"></i> Refresh
+                        </button>
+                    </div>
+                </div>
+            </nav>
+            
+            <!-- Main content -->
+            <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4">
+                {% block content %}{% endblock %}
+            </main>
+        </div>
+    </div>
+    
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Auto-refresh functionality
+        let refreshInterval;
+        
+        function updateLastRefresh() {
+            document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+        }
+        
+        function refreshData() {
+            const refreshIcon = document.getElementById('refresh-icon');
+            refreshIcon.classList.add('auto-refresh');
+            
+            fetch('/api/stats')
+                .then(response => response.json())
+                .then(data => {
+                    updateBotStatus(data.bot_stats);
+                    updateMetrics(data);
+                    updateLastRefresh();
+                })
+                .catch(error => console.error('Error:', error))
+                .finally(() => {
+                    setTimeout(() => {
+                        refreshIcon.classList.remove('auto-refresh');
+                    }, 1000);
+                });
+        }
+        
+        function updateBotStatus(botStats) {
+            const statusElement = document.getElementById('bot-status');
+            if (botStats.status === 'online') {
+                statusElement.className = 'badge bg-success';
+                statusElement.innerHTML = '<i class="fas fa-circle me-1"></i>Online';
+            } else {
+                statusElement.className = 'badge bg-danger';
+                statusElement.innerHTML = '<i class="fas fa-circle me-1"></i>Offline';
+            }
+        }
+        
+        function updateMetrics(data) {
+            // Update guild count
+            const guildElement = document.getElementById('guild-count');
+            if (guildElement) {
+                guildElement.textContent = data.bot_stats.guilds;
+            }
+            
+            // Update user count
+            const userElement = document.getElementById('user-count');
+            if (userElement) {
+                userElement.textContent = data.bot_stats.users.toLocaleString();
+            }
+            
+            // Update warnings
+            const warningsElement = document.getElementById('warnings-hour');
+            if (warningsElement) {
+                warningsElement.textContent = data.warnings_last_hour;
+            }
+            
+            // Update latency
+            const latencyElement = document.getElementById('bot-latency');
+            if (latencyElement && data.bot_stats.latency) {
+                latencyElement.textContent = data.bot_stats.latency + 'ms';
+            }
+        }
+        
+        // Auto-refresh every 30 seconds
+        refreshInterval = setInterval(refreshData, 30000);
+        
+        // Initial refresh
+        updateLastRefresh();
+        
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            if (refreshInterval) {
+                clearInterval(refreshInterval);
+            }
+        });
+    </script>
+    
+    {% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,306 @@
+{% extends "base.html" %}
+
+{% block title %}Warnings - Discord Bot{% endblock %}
+
+{% block content %}
+<div class="dashboard-header">
+    <div class="container">
+        <div class="d-flex justify-content-between align-items-center">
+            <div>
+                <h1><i class="fas fa-exclamation-triangle me-3"></i>Warning Management</h1>
+                <p class="mb-0">View and manage warnings from all connected bots</p>
+            </div>
+            <a href="{{ url_for('dashboard') }}" class="btn btn-outline-light">
+                <i class="fas fa-home me-2"></i>Menu Principal
+            </a>
+        </div>
+    </div>
+</div>
+
+<!-- Filters -->
+<div class="card mb-4">
+    <div class="card-header">
+        <h5 class="mb-0"><i class="fas fa-filter me-2"></i>Filters</h5>
+    </div>
+    <div class="card-body">
+        <form method="GET" class="row g-3">
+            <div class="col-md-4">
+                <label for="guild_id" class="form-label">Server</label>
+                <select name="guild_id" id="guild_id" class="form-select">
+                    <option value="">All Servers</option>
+                    {% for guild_id, guild_name in guilds_info.items() %}
+                        <option value="{{ guild_id }}" {% if guild_id == current_guild_id %}selected{% endif %}>
+                            {{ guild_name }}
+                        </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-md-4">
+                <label for="bot_source" class="form-label">Bot Source</label>
+                <select name="bot_source" id="bot_source" class="form-select">
+                    <option value="">All Bots</option>
+                    {% for source in bot_sources %}
+                        <option value="{{ source }}" {% if source == current_bot_source %}selected{% endif %}>
+                            {% if source == 'draftbot' %}🤖 DraftBot
+                            {% elif source == 'popocorp' %}🛡️ Popocorp
+                            {% elif source == 'carl-bot' %}🦾 Carl-bot
+                            {% elif source == 'dyno' %}⚡ Dyno
+                            {% elif source == 'mee6' %}🎵 MEE6
+                            {% else %}{{ source | title }}{% endif %}
+                        </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-md-4 d-flex align-items-end">
+                <button type="submit" class="btn btn-primary me-2">
+                    <i class="fas fa-search me-1"></i>Filter
+                </button>
+                <a href="{{ url_for('warnings_page') }}" class="btn btn-outline-secondary">
+                    <i class="fas fa-times me-1"></i>Clear
+                </a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Results -->
+<div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0">
+            <i class="fas fa-list me-2"></i>Warnings 
+            <span class="badge bg-secondary">{{ total_warnings }}</span>
+        </h5>
+        <div class="d-flex align-items-center">
+            <small class="text-muted me-3">Page {{ page }} of {{ total_pages }}</small>
+        </div>
+    </div>
+    <div class="card-body">
+        {% if warnings %}
+            <div class="table-responsive">
+                <div class="warnings-list">
+                    {% for warning in warnings %}
+                    <div class="warning-item border rounded p-3 mb-3">
+                        <div class="row align-items-center">
+                            <!-- User Info Column -->
+                            <div class="col-md-4">
+                                <div class="d-flex align-items-center">
+                                    <!-- User Avatar -->
+                                    <div class="me-3">
+                                        {% if warning.avatar_url %}
+                                            <img src="{{ warning.avatar_url }}" alt="{{ warning.username }}" 
+                                                 class="rounded-circle" style="width: 40px; height: 40px;">
+                                        {% else %}
+                                            <div class="rounded-circle bg-secondary d-flex align-items-center justify-content-center text-white" 
+                                                 style="width: 40px; height: 40px; font-size: 16px;">
+                                                {{ warning.username[0] if warning.username else '?' }}
+                                            </div>
+                                        {% endif %}
+                                    </div>
+                                    
+                                    <!-- User Details -->
+                                    <div>
+                                        <div class="fw-bold">{{ warning.display_name }}</div>
+                                        <div class="small text-muted">@{{ warning.username }}</div>
+                                        <div class="small text-muted">ID: {{ warning.user_id }}</div>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <!-- Warning Details Column -->
+                            <div class="col-md-4">
+                                <div class="mb-2">
+                                    <span class="bot-badge badge me-2 
+                                        {% if warning.bot_source == 'draftbot' %}bg-info
+                                        {% elif warning.bot_source == 'popocorp' %}bg-primary
+                                        {% elif warning.bot_source == 'carl-bot' %}bg-success
+                                        {% elif warning.bot_source == 'dyno' %}bg-warning
+                                        {% elif warning.bot_source == 'mee6' %}bg-danger
+                                        {% else %}bg-secondary{% endif %}">
+                                        {% if warning.bot_source == 'draftbot' %}🤖 DraftBot
+                                        {% elif warning.bot_source == 'popocorp' %}🛡️ Popocorp
+                                        {% elif warning.bot_source == 'carl-bot' %}🦾 Carl-bot
+                                        {% elif warning.bot_source == 'dyno' %}⚡ Dyno
+                                        {% elif warning.bot_source == 'mee6' %}🎵 MEE6
+                                        {% else %}{{ warning.bot_source | title }}{% endif %}
+                                    </span>
+                                </div>
+                                <div class="text-break">
+                                    {{ warning.reason or 'Aucune raison fournie' }}
+                                </div>
+                                <div class="small text-muted mt-1">
+                                    {{ warning.guild_name or 'Serveur inconnu' }}
+                                </div>
+                            </div>
+                            
+                            <!-- Timestamp and Actions Column -->
+                            <div class="col-md-4 text-end">
+                                <div class="mb-2">
+                                    <small class="text-muted">{{ warning.timestamp.strftime('%d/%m/%Y à %H:%M') }}</small>
+                                </div>
+                                {% if warning.moderator_username %}
+                                <div class="small text-muted mb-2">
+                                    Par: {{ warning.moderator_display_name or warning.moderator_username }}
+                                </div>
+                                {% endif %}
+                                <div>
+                                    <button class="btn btn-sm btn-outline-info" onclick="viewUserWarnings({{ warning.user_id }}, {{ warning.guild_id }})">
+                                        <i class="fas fa-eye me-1"></i>Voir tout
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <!-- Pagination -->
+            {% if total_pages > 1 %}
+            <nav aria-label="Page navigation">
+                <ul class="pagination justify-content-center">
+                    {% if page > 1 %}
+                        <li class="page-item">
+                            <a class="page-link" href="?page={{ page - 1 }}{% if current_guild_id %}&guild_id={{ current_guild_id }}{% endif %}{% if current_bot_source %}&bot_source={{ current_bot_source }}{% endif %}">
+                                Previous
+                            </a>
+                        </li>
+                    {% endif %}
+                    
+                    {% for p in range(1, total_pages + 1) %}
+                        {% if p == page %}
+                            <li class="page-item active">
+                                <span class="page-link">{{ p }}</span>
+                            </li>
+                        {% elif p == 1 or p == total_pages or (p >= page - 2 and p <= page + 2) %}
+                            <li class="page-item">
+                                <a class="page-link" href="?page={{ p }}{% if current_guild_id %}&guild_id={{ current_guild_id }}{% endif %}{% if current_bot_source %}&bot_source={{ current_bot_source }}{% endif %}">
+                                    {{ p }}
+                                </a>
+                            </li>
+                        {% elif p == page - 3 or p == page + 3 %}
+                            <li class="page-item disabled">
+                                <span class="page-link">...</span>
+                            </li>
+                        {% endif %}
+                    {% endfor %}
+                    
+                    {% if page < total_pages %}
+                        <li class="page-item">
+                            <a class="page-link" href="?page={{ page + 1 }}{% if current_guild_id %}&guild_id={{ current_guild_id }}{% endif %}{% if current_bot_source %}&bot_source={{ current_bot_source }}{% endif %}">
+                                Next
+                            </a>
+                        </li>
+                    {% endif %}
+                </ul>
+            </nav>
+            {% endif %}
+        {% else %}
+            <div class="text-center py-5">
+                <i class="fas fa-search fa-3x text-muted mb-3"></i>
+                <h4>No warnings found</h4>
+                <p class="text-muted">Try adjusting your filters or check back later.</p>
+            </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- User Warnings Modal -->
+<div class="modal fade" id="userWarningsModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">User Warnings</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="userWarningsContent">
+                <div class="text-center">
+                    <div class="spinner-border" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function viewUserWarnings(userId, guildId) {
+    const modal = new bootstrap.Modal(document.getElementById('userWarningsModal'));
+    const content = document.getElementById('userWarningsContent');
+    
+    // Show loading spinner
+    content.innerHTML = `
+        <div class="text-center">
+            <div class="spinner-border" role="status">
+                <span class="visually-hidden">Loading...</span>
+            </div>
+        </div>
+    `;
+    
+    modal.show();
+    
+    // Fetch user warnings
+    fetch(`/api/warnings/${userId}?guild_id=${guildId}`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                content.innerHTML = `
+                    <div class="alert alert-danger">
+                        <i class="fas fa-exclamation-triangle me-2"></i>
+                        Error loading warnings: ${data.error}
+                    </div>
+                `;
+                return;
+            }
+            
+            let html = `
+                <div class="mb-3">
+                    <h6>User ID: <code>${data.user_id}</code></h6>
+                    <p class="text-muted">Total Warnings: ${data.total}</p>
+                </div>
+            `;
+            
+            if (data.warnings.length > 0) {
+                html += '<div class="list-group">';
+                data.warnings.forEach(warning => {
+                    const date = new Date(warning.timestamp).toLocaleString();
+                    const botIcon = {
+                        'draftbot': '🤖',
+                        'popocorp': '🛡️',
+                        'carl-bot': '🦾',
+                        'dyno': '⚡',
+                        'mee6': '🎵'
+                    }[warning.bot_source] || '❓';
+                    
+                    html += `
+                        <div class="list-group-item">
+                            <div class="d-flex justify-content-between align-items-start">
+                                <div>
+                                    <span class="badge bg-secondary me-2">${botIcon} ${warning.bot_source}</span>
+                                    <p class="mb-1">${warning.reason || 'No reason provided'}</p>
+                                </div>
+                                <small>${date}</small>
+                            </div>
+                        </div>
+                    `;
+                });
+                html += '</div>';
+            } else {
+                html += '<p class="text-muted text-center">No warnings found for this user.</p>';
+            }
+            
+            content.innerHTML = html;
+        })
+        .catch(error => {
+            content.innerHTML = `
+                <div class="alert alert-danger">
+                    <i class="fas fa-exclamation-triangle me-2"></i>
+                    Error loading warnings: ${error.message}
+                </div>
+            `;
+        });
+}
+</script>
+{% endblock %}

@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  popocorps-bot:
+    build: .
+    container_name: popocorps-discord-bot
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - DATABASE_URL=${DATABASE_URL}
+      - SESSION_SECRET=${SESSION_SECRET}
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./raid_data:/app/raid_data
+      - ./guild_settings:/app/guild_settings
+      - ./temp_images:/app/temp_images
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    depends_on:
+      - postgres
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: popocorps-database
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: popocorps
+      POSTGRES_USER: popocorps
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-popocorps123}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+volumes:
+  postgres_data:

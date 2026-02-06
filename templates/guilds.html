@@ -1,0 +1,270 @@
+{% extends "base.html" %}
+
+{% block title %}Servers - Discord Bot{% endblock %}
+
+{% block content %}
+<div class="dashboard-header">
+    <div class="container">
+        <div class="d-flex justify-content-between align-items-center">
+            <div>
+                <h1><i class="fas fa-server me-3"></i>Server Management</h1>
+                <p class="mb-0">Configure and monitor your Discord servers</p>
+            </div>
+            <a href="{{ url_for('dashboard') }}" class="btn btn-outline-light">
+                <i class="fas fa-home me-2"></i>Menu Principal
+            </a>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    {% for guild in guilds %}
+    <div class="col-md-6 col-lg-4 mb-4">
+        <div class="card h-100">
+            <div class="card-header d-flex align-items-center">
+                {% if guild.icon %}
+                    <img src="{{ guild.icon }}" alt="{{ guild.name }}" class="guild-icon me-3">
+                {% else %}
+                    <div class="guild-icon me-3 bg-secondary d-flex align-items-center justify-content-center">
+                        <i class="fas fa-server text-white"></i>
+                    </div>
+                {% endif %}
+                <div>
+                    <h6 class="mb-0">{{ guild.name }}</h6>
+                    <small class="text-muted">{{ guild.member_count }} members</small>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <span class="text-muted">Setup Status</span>
+                        {% if guild.setup_complete %}
+                            <span class="badge bg-success">
+                                <i class="fas fa-check me-1"></i>Configured
+                            </span>
+                        {% else %}
+                            <span class="badge bg-warning">
+                                <i class="fas fa-exclamation-triangle me-1"></i>Incomplete
+                            </span>
+                        {% endif %}
+                    </div>
+                    
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <span class="text-muted">Warnings</span>
+                        <span class="badge bg-info">{{ guild.warning_count }}</span>
+                    </div>
+                    
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <span class="text-muted">Owner</span>
+                        <small>{{ guild.owner }}</small>
+                    </div>
+                    
+                    <div class="d-flex justify-content-between align-items-center">
+                        <span class="text-muted">Created</span>
+                        <small>{{ guild.created_at }}</small>
+                    </div>
+                </div>
+                
+                <div class="mb-3">
+                    <h6>Configuration</h6>
+                    <div class="row">
+                        <div class="col-6">
+                            <small class="text-muted d-block">Log Channel</small>
+                            {% if guild.log_channel_id %}
+                                <i class="fas fa-check text-success"></i>
+                                <small>Configured</small>
+                            {% else %}
+                                <i class="fas fa-times text-danger"></i>
+                                <small>Not set</small>
+                            {% endif %}
+                        </div>
+                        <div class="col-6">
+                            <small class="text-muted d-block">Announcements</small>
+                            {% if guild.announcement_channel_id %}
+                                <i class="fas fa-check text-success"></i>
+                                <small>Configured</small>
+                            {% else %}
+                                <i class="fas fa-times text-danger"></i>
+                                <small>Not set</small>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="row mt-2">
+                        <div class="col-6">
+                            <small class="text-muted d-block">Admin Role</small>
+                            {% if guild.admin_role_id %}
+                                <i class="fas fa-check text-success"></i>
+                                <small>Configured</small>
+                            {% else %}
+                                <i class="fas fa-times text-danger"></i>
+                                <small>Not set</small>
+                            {% endif %}
+                        </div>
+                        <div class="col-6">
+                            <small class="text-muted d-block">Welcome/Goodbye</small>
+                            {% if guild.welcome_enabled or guild.goodbye_enabled %}
+                                <i class="fas fa-check text-success"></i>
+                                <small>Active</small>
+                            {% else %}
+                                <i class="fas fa-times text-muted"></i>
+                                <small>Disabled</small>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="card-footer">
+                <div class="d-grid gap-2">
+                    <button class="btn btn-primary btn-sm" onclick="viewServerDetails({{ guild.id }})">
+                        <i class="fas fa-eye me-1"></i>View Details
+                    </button>
+                    <a href="{{ url_for('warnings_page', guild_id=guild.id) }}" class="btn btn-outline-warning btn-sm">
+                        <i class="fas fa-exclamation-triangle me-1"></i>View Warnings
+                    </a>
+                    <a href="{{ url_for('welcome_config_page', guild_id=guild.id) }}" class="btn btn-outline-success btn-sm">
+                        <i class="fas fa-hand-wave me-1"></i>Welcome Settings
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+    
+    {% if not guilds %}
+    <div class="col-12">
+        <div class="card">
+            <div class="card-body text-center py-5">
+                <i class="fas fa-server fa-3x text-muted mb-3"></i>
+                <h4>No Servers Connected</h4>
+                <p class="text-muted">The bot is not currently connected to any Discord servers.</p>
+                <a href="https://discord.com/api/oauth2/authorize?client_id=1366294494386851880&permissions=1374658358486&scope=bot%20applications.commands" 
+                   class="btn btn-primary" target="_blank">
+                    <i class="fas fa-plus me-1"></i>Invite Bot to Server
+                </a>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Server Details Modal -->
+<div class="modal fade" id="serverDetailsModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Server Details</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="serverDetailsContent">
+                <div class="text-center">
+                    <div class="spinner-border" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function viewServerDetails(guildId) {
+    const modal = new bootstrap.Modal(document.getElementById('serverDetailsModal'));
+    const content = document.getElementById('serverDetailsContent');
+    
+    // Find guild data from the page
+    const guildData = {{ guilds | tojson }};
+    const guild = guildData.find(g => g.id === guildId);
+    
+    if (guild) {
+        let setupInstructions = '';
+        if (!guild.setup_complete) {
+            setupInstructions = `
+                <div class="alert alert-warning">
+                    <h6><i class="fas fa-exclamation-triangle me-2"></i>Setup Required</h6>
+                    <p class="mb-2">To fully configure the bot for this server, use these Discord commands:</p>
+                    <ul class="mb-0">
+                        <li><code>/raid setup</code> - Configure log and announcement channels</li>
+                        <li>Make sure the bot has proper permissions in your channels</li>
+                        <li>Set up an admin role for raid command access</li>
+                    </ul>
+                </div>
+            `;
+        }
+        
+        content.innerHTML = `
+            <div class="row">
+                <div class="col-md-4 text-center mb-4">
+                    ${guild.icon ? 
+                        `<img src="${guild.icon}" alt="${guild.name}" class="img-fluid rounded-circle mb-3" style="max-width: 150px;">` :
+                        `<div class="bg-secondary rounded-circle mx-auto mb-3 d-flex align-items-center justify-content-center" style="width: 150px; height: 150px;">
+                            <i class="fas fa-server fa-4x text-white"></i>
+                         </div>`
+                    }
+                    <h4>${guild.name}</h4>
+                    <p class="text-muted">Guild ID: ${guild.id}</p>
+                </div>
+                <div class="col-md-8">
+                    <h6>Server Information</h6>
+                    <table class="table table-sm">
+                        <tr>
+                            <td><strong>Members:</strong></td>
+                            <td>${guild.member_count.toLocaleString()}</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Owner:</strong></td>
+                            <td>${guild.owner}</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Created:</strong></td>
+                            <td>${guild.created_at}</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Total Warnings:</strong></td>
+                            <td>${guild.warning_count}</td>
+                        </tr>
+                    </table>
+                    
+                    <h6 class="mt-4">Bot Configuration</h6>
+                    <table class="table table-sm">
+                        <tr>
+                            <td><strong>Log Channel:</strong></td>
+                            <td>
+                                ${guild.log_channel_id ? 
+                                    '<i class="fas fa-check text-success"></i> Configured' : 
+                                    '<i class="fas fa-times text-danger"></i> Not configured'
+                                }
+                            </td>
+                        </tr>
+                        <tr>
+                            <td><strong>Announcement Channel:</strong></td>
+                            <td>
+                                ${guild.announcement_channel_id ? 
+                                    '<i class="fas fa-check text-success"></i> Configured' : 
+                                    '<i class="fas fa-times text-danger"></i> Not configured'
+                                }
+                            </td>
+                        </tr>
+                        <tr>
+                            <td><strong>Admin Role:</strong></td>
+                            <td>
+                                ${guild.admin_role_id ? 
+                                    '<i class="fas fa-check text-success"></i> Configured' : 
+                                    '<i class="fas fa-times text-danger"></i> Not configured'
+                                }
+                            </td>
+                        </tr>
+                    </table>
+                </div>
+            </div>
+            ${setupInstructions}
+        `;
+    } else {
+        content.innerHTML = '<div class="alert alert-danger">Guild information not found.</div>';
+    }
+    
+    modal.show();
+}
+</script>
+{% endblock %}
