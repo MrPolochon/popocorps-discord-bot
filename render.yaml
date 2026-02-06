@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: popocorps-discord-bot
+    env: python
+    plan: free
+    buildCommand: pip install .
+    startCommand: python run.py
+    healthCheckPath: /
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: SESSION_SECRET
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: DISCORD_CLIENT_ID
+        sync: false

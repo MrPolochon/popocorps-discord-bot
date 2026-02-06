@@ -1,0 +1,232 @@
+{% extends "base.html" %}
+
+{% block title %}Welcome/Goodbye Settings - {{ guild.name }}{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+    <div class="row">
+        <div class="col-lg-12">
+            <div class="d-flex justify-content-between align-items-center mb-4">
+                <div>
+                    <h2><i class="fas fa-hand-wave"></i> Welcome & Goodbye Settings</h2>
+                    <p class="text-muted">Configure custom welcome and goodbye messages for {{ guild.name }}</p>
+                </div>
+                <div>
+                    <a href="{{ url_for('dashboard') }}" class="btn btn-outline-primary me-2">
+                        <i class="fas fa-home me-1"></i> Menu Principal
+                    </a>
+                    <a href="{{ url_for('guilds_page') }}" class="btn btn-outline-secondary">
+                        <i class="fas fa-arrow-left"></i> Back to Guilds
+                    </a>
+                </div>
+            </div>
+
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    {% for category, message in messages %}
+                        <div class="alert alert-{{ 'success' if category == 'success' else 'danger' }} alert-dismissible fade show" role="alert">
+                            {{ message }}
+                            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                        </div>
+                    {% endfor %}
+                {% endif %}
+            {% endwith %}
+
+            <form method="POST" action="{{ url_for('save_welcome_config', guild_id=guild.id) }}">
+                <div class="row">
+                    <!-- Welcome Settings -->
+                    <div class="col-lg-6">
+                        <div class="card">
+                            <div class="card-header bg-success text-white">
+                                <h5><i class="fas fa-user-plus"></i> Welcome Messages</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="form-check form-switch mb-3">
+                                    <input class="form-check-input" type="checkbox" id="welcome_enabled" name="welcome_enabled" 
+                                           {% if welcome_settings.enabled %}checked{% endif %}>
+                                    <label class="form-check-label" for="welcome_enabled">
+                                        <strong>Enable Welcome Messages</strong>
+                                    </label>
+                                </div>
+
+                                <div class="mb-3">
+                                    <label for="welcome_channel_id" class="form-label">Welcome Channel</label>
+                                    <select class="form-select" id="welcome_channel_id" name="welcome_channel_id">
+                                        <option value="">Select a channel...</option>
+                                        {% for channel in text_channels %}
+                                            <option value="{{ channel.id }}" 
+                                                    {% if welcome_settings.channel_id == channel.id %}selected{% endif %}>
+                                                #{{ channel.name }}
+                                            </option>
+                                        {% endfor %}
+                                    </select>
+                                </div>
+
+                                <div class="mb-3">
+                                    <label for="welcome_message" class="form-label">Welcome Message</label>
+                                    <textarea class="form-control" id="welcome_message" name="welcome_message" rows="3" 
+                                              placeholder="Welcome to {server_name}, {user_mention}! 🎉">{{ welcome_settings.message }}</textarea>
+                                    <div class="form-text">
+                                        Available variables: {user_mention}, {user_name}, {server_name}, {member_count}
+                                    </div>
+                                </div>
+
+                                <div class="mb-3">
+                                    <label for="welcome_background" class="form-label">Background Image URL</label>
+                                    <input type="url" class="form-control" id="welcome_background" name="welcome_background" 
+                                           value="{{ welcome_settings.background or '' }}" 
+                                           placeholder="https://example.com/background.jpg or .gif">
+                                    <div class="form-text">
+                                        Supports images and animated GIFs. Leave empty for default cosmic background.
+                                    </div>
+                                </div>
+
+                                <div class="mb-3">
+                                    <label for="welcome_font" class="form-label">Font Style</label>
+                                    <select class="form-select" id="welcome_font" name="welcome_font">
+                                        {% for font in available_fonts %}
+                                            <option value="{{ font }}" 
+                                                    {% if welcome_settings.font == font %}selected{% endif %}>
+                                                {{ font }}
+                                            </option>
+                                        {% endfor %}
+                                    </select>
+                                </div>
+
+                                <div class="mt-3 p-3 bg-light rounded">
+                                    <h6 class="mb-2"><i class="fas fa-info-circle"></i> Preview Features</h6>
+                                    <ul class="list-unstyled mb-0 small">
+                                        <li><i class="fas fa-check text-success"></i> Custom background images & GIFs</li>
+                                        <li><i class="fas fa-check text-success"></i> Circular user avatar overlay</li>
+                                        <li><i class="fas fa-check text-success"></i> Custom fonts with text outline</li>
+                                        <li><i class="fas fa-check text-success"></i> Cosmic default background</li>
+                                    </ul>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Goodbye Settings -->
+                    <div class="col-lg-6">
+                        <div class="card">
+                            <div class="card-header bg-primary text-white">
+                                <h5><i class="fas fa-user-minus"></i> Goodbye Messages</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="form-check form-switch mb-3">
+                                    <input class="form-check-input" type="checkbox" id="goodbye_enabled" name="goodbye_enabled" 
+                                           {% if goodbye_settings.enabled %}checked{% endif %}>
+                                    <label class="form-check-label" for="goodbye_enabled">
+                                        <strong>Enable Goodbye Messages</strong>
+                                    </label>
+                                </div>
+
+                                <div class="mb-3">
+                                    <label for="goodbye_channel_id" class="form-label">Goodbye Channel</label>
+                                    <select class="form-select" id="goodbye_channel_id" name="goodbye_channel_id">
+                                        <option value="">Select a channel...</option>
+                                        {% for channel in text_channels %}
+                                            <option value="{{ channel.id }}" 
+                                                    {% if goodbye_settings.channel_id == channel.id %}selected{% endif %}>
+                                                #{{ channel.name }}
+                                            </option>
+                                        {% endfor %}
+                                    </select>
+                                </div>
+
+                                <div class="mb-3">
+                                    <label for="goodbye_message" class="form-label">Goodbye Message</label>
+                                    <textarea class="form-control" id="goodbye_message" name="goodbye_message" rows="3" 
+                                              placeholder="Goodbye {user_name}! 👋">{{ goodbye_settings.message }}</textarea>
+                                    <div class="form-text">
+                                        Available variables: {user_mention}, {user_name}, {server_name}, {member_count}
+                                    </div>
+                                </div>
+
+                                <div class="mb-3">
+                                    <label for="goodbye_background" class="form-label">Background Image URL</label>
+                                    <input type="url" class="form-control" id="goodbye_background" name="goodbye_background" 
+                                           value="{{ goodbye_settings.background or '' }}" 
+                                           placeholder="https://example.com/background.jpg or .gif">
+                                    <div class="form-text">
+                                        Supports images and animated GIFs. Leave empty for default cosmic background.
+                                    </div>
+                                </div>
+
+                                <div class="mb-3">
+                                    <label for="goodbye_font" class="form-label">Font Style</label>
+                                    <select class="form-select" id="goodbye_font" name="goodbye_font">
+                                        {% for font in available_fonts %}
+                                            <option value="{{ font }}" 
+                                                    {% if goodbye_settings.font == font %}selected{% endif %}>
+                                                {{ font }}
+                                            </option>
+                                        {% endfor %}
+                                    </select>
+                                </div>
+
+                                <div class="mt-3 p-3 bg-light rounded">
+                                    <h6 class="mb-2"><i class="fas fa-palette"></i> Styling Features</h6>
+                                    <ul class="list-unstyled mb-0 small">
+                                        <li><i class="fas fa-check text-primary"></i> Animated GIF support</li>
+                                        <li><i class="fas fa-check text-primary"></i> Multiple font options</li>
+                                        <li><i class="fas fa-check text-primary"></i> Automatic text wrapping</li>
+                                        <li><i class="fas fa-check text-primary"></i> High-quality image generation</li>
+                                    </ul>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="row mt-4">
+                    <div class="col-12">
+                        <div class="card">
+                            <div class="card-body text-center">
+                                <button type="submit" class="btn btn-success btn-lg">
+                                    <i class="fas fa-save"></i> Save Settings
+                                </button>
+                                <a href="{{ url_for('guilds_page') }}" class="btn btn-outline-secondary btn-lg ms-3">
+                                    <i class="fas fa-times"></i> Cancel
+                                </a>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </form>
+
+            <div class="row mt-4">
+                <div class="col-12">
+                    <div class="card border-info">
+                        <div class="card-header bg-info text-white">
+                            <h5><i class="fas fa-lightbulb"></i> Tips for Best Results</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <h6><i class="fas fa-image"></i> Background Images</h6>
+                                    <ul class="small">
+                                        <li>Use high-resolution images (recommended: 800x400px)</li>
+                                        <li>Animated GIFs are fully supported</li>
+                                        <li>Images will be automatically resized to fit</li>
+                                        <li>Use cosmic or space themes like Koya for best effect</li>
+                                    </ul>
+                                </div>
+                                <div class="col-md-6">
+                                    <h6><i class="fas fa-font"></i> Message Customization</h6>
+                                    <ul class="small">
+                                        <li>Use {user_mention} to mention the user</li>
+                                        <li>Use {server_name} for the server name</li>
+                                        <li>Use {member_count} to show member count</li>
+                                        <li>Messages support multiple lines and emojis</li>
+                                    </ul>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
