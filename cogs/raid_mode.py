@@ -37,301 +37,202 @@ class RaidMode(commands.Cog):
         # Register slash commands
         self._register_commands()
 
-        # Add message listener for spam detection
-        @bot.event
-        async def on_message(message):
-            # Skip messages from bots and DMs
-            if message.author.bot or not message.guild:
-                return
+    def _raid_system_enabled(self, guild_id: int) -> bool:
+        """Verifie si le systeme anti-raid est active pour ce serveur."""
+        return guild_settings.get_setting(guild_id, "raid_mode_enabled", True)
 
-            guild_id = message.guild.id
+    def _validate_raid_setup(self, guild: discord.Guild) -> str | None:
+        """Retourne un message d'erreur si la config est incomplete."""
+        if not self.get_member_role(guild):
+            return (
+                "⚠️ Aucun **rôle membre** configuré. Lance `/setup` pour définir "
+                "le rôle membre (nécessaire au verrouillage des salons)."
+            )
+        if not guild.me.guild_permissions.manage_channels:
+            return "⚠️ Il me manque la permission **Gérer les salons** pour verrouiller les canaux."
+        return None
 
-            # Only track messages if raid mode is active
-            if self.raid_active.get(guild_id, False):
-                # Track message for spam detection
-                track_message(message)
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        """Suivi spam en mode raid + suppression automatique des flooders."""
+        if message.author.bot or not message.guild:
+            return
 
-            # Process commands
-            await bot.process_commands(message)
+        guild_id = message.guild.id
+        if not self.raid_active.get(guild_id, False):
+            return
+
+        track_message(message)
+
+        if message.author.id not in get_spammer_ids(guild_id):
+            return
+
+        try:
+            await message.delete()
+        except (discord.Forbidden, discord.NotFound):
+            pass
+
+        member = message.author
+        if (
+            isinstance(member, discord.Member)
+            and not has_raid_mode_permission(member)
+            and member.guild.me.guild_permissions.moderate_members
+            and (member.top_role < member.guild.me.top_role)
+        ):
+            try:
+                await member.timeout(
+                    timedelta(minutes=10),
+                    reason="Spam détecté pendant le mode raid",
+                )
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+
+    async def cog_load(self):
+        """Reinitialise les etats raid orphelins apres redemarrage."""
+        for guild_id, active in list(self.raid_active.items()):
+            if not active:
+                continue
+            self.raid_active[guild_id] = False
+            self.channel_states.pop(guild_id, None)
+            self.invite_states.pop(guild_id, None)
+            self.save_raid_state(guild_id)
+            guild = self.bot.get_guild(guild_id)
+            if not guild:
+                continue
+            log_channel_id = guild_settings.get_log_channel(guild_id)
+            if not log_channel_id:
+                continue
+            log_channel = guild.get_channel(log_channel_id)
+            if not log_channel:
+                continue
+            try:
+                embed = discord.Embed(
+                    title="⚠️ Mode raid réinitialisé",
+                    description=(
+                        "Le bot a redémarré pendant un mode raid actif. "
+                        "Les salons **n'ont pas été re-verrouillés** automatiquement.\n"
+                        "Relance `/raid on` si la menace persiste."
+                    ),
+                    color=discord.Color.orange(),
+                    timestamp=datetime.now(),
+                )
+                await log_channel.send(embed=embed)
+            except Exception as e:
+                logging.error("Erreur notification reset raid guild %s: %s", guild_id, e)
+
+    async def auto_activate_raid(self, guild: discord.Guild, reason: str) -> bool:
+        """Active le mode raid automatiquement (si auto_raid_enabled)."""
+        guild_id = guild.id
+        if self.raid_active.get(guild_id, False):
+            return False
+        if not guild_settings.get_setting(guild_id, "auto_raid_enabled", False):
+            return False
+        if not self._raid_system_enabled(guild_id):
+            return False
+        setup_error = self._validate_raid_setup(guild)
+        if setup_error:
+            logging.warning("Auto-raid impossible guild %s: %s", guild_id, setup_error)
+            return False
+
+        class _AutoInteraction:
+            def __init__(self, g):
+                self.guild = g
+                self.user = g.me
+                self.response = self
+                self.followup = self
+
+            async def defer(self, **kwargs):
+                return None
+
+            async def send(self, *args, **kwargs):
+                return None
+
+        logging.info("Auto-activation mode raid guild %s: %s", guild_id, reason)
+        await self._enable_raid_mode(_AutoInteraction(guild), auto_reason=reason)
+        return True
 
     def _register_commands(self):
         """Register slash commands for the bot."""
+        raid_group = app_commands.Group(name="raid", description="Protection anti-raid")
 
-        # Adding traditional commands first
-        @commands.group(name="raid", invoke_without_command=True)
-        @commands.has_permissions(manage_guild=True)
-        async def raidmode(self, ctx):
-            """Base command for raid mode functionality."""
-            embed = discord.Embed(
-                title="Raid Mode Commands",
-                description="Commands to manage server raid protection",
-                color=discord.Color.blue()
-            )
-
-            embed.add_field(
-                name="!raid on", 
-                value="Activate raid mode - locks down all text channels",
-                inline=False
-            )
-            embed.add_field(
-                name="!raid off", 
-                value="Deactivate raid mode - restores previous channel permissions",
-                inline=False
-            )
-            embed.add_field(
-                name="!raid status", 
-                value="Check if raid mode is currently active",
-                inline=False
-            )
-            embed.add_field(
-                name="!raid setup", 
-                value="Configure log and announcement channels",
-                inline=False
-            )
-
-            await ctx.send(embed=embed)
-
-        @raidmode.command(name="on")
-        @commands.has_permissions(manage_guild=True)
-        async def raid_on_prefix(self, ctx):
-            """Enable raid mode - locks down all text channels."""
-            # Create an Interaction-like object with necessary attributes
-            class FakeInteraction:
-                def __init__(self, ctx):
-                    self.guild = ctx.guild
-                    self.user = ctx.author
-                    self.channel = ctx.channel
-                    self.response = self
-                    self.followup = ctx
-
-                async def defer(self, ephemeral=False):
-                    pass
-
-                async def send_message(self, content, ephemeral=False):
-                    await ctx.send(content)
-
-            fake_interaction = FakeInteraction(ctx)
-            await self._enable_raid_mode(fake_interaction)
-
-        @raidmode.command(name="off")
-        @commands.has_permissions(manage_guild=True)
-        async def raid_off_prefix(self, ctx):
-            """Disable raid mode - restores previous channel permissions."""
-            # Create an Interaction-like object with necessary attributes
-            class FakeInteraction:
-                def __init__(self, ctx):
-                    self.guild = ctx.guild
-                    self.user = ctx.author
-                    self.channel = ctx.channel
-                    self.response = self
-                    self.followup = ctx
-
-                async def defer(self, ephemeral=False):
-                    pass
-
-                async def send_message(self, content, ephemeral=False):
-                    await ctx.send(content)
-
-            fake_interaction = FakeInteraction(ctx)
-            await self._disable_raid_mode(fake_interaction)
-
-        @raidmode.command(name="status")
-        async def raid_status_prefix(self, ctx):
-            """Check the current status of raid mode."""
-            guild_id = ctx.guild.id
-            is_active = self.raid_active.get(guild_id, False)
-
-            if is_active:
-                embed = discord.Embed(
-                    title="🚨 Raid Mode Status",
-                    description="**Raid mode is currently ACTIVE**\nAll channels are locked down to prevent spam.",
-                    color=discord.Color.red()
-                )
-            else:
-                embed = discord.Embed(
-                    title="✅ Raid Mode Status",
-                    description="**Raid mode is currently INACTIVE**\nAll channels are operating normally.",
-                    color=discord.Color.green()
-                )
-
-            await ctx.send(embed=embed)
-
-        @raidmode.command(name="setup")
-        @commands.has_permissions(manage_guild=True)
-        async def raid_setup_prefix(self, ctx, log_channel=None, announcement_channel=None, admin_role=None):
-            """Configure log and announcement channels for raid notifications."""
-            guild_id = ctx.guild.id
-
-            # Update settings based on provided parameters
-            if log_channel:
-                guild_settings.set_log_channel(guild_id, log_channel.id)
-
-            if announcement_channel:
-                guild_settings.set_announcement_channel(guild_id, announcement_channel.id)
-
-            if admin_role:
-                guild_settings.set_admin_role(guild_id, admin_role.id)
-
-            # member_role parameter not available in this function
-
-            # Create response embed
-            embed = discord.Embed(
-                title="✅ Raid Protection Setup",
-                description="Your raid protection settings have been updated.",
-                color=discord.Color.green()
-            )
-
-            # Add fields for current settings
-            log_channel_id = guild_settings.get_log_channel(guild_id)
-            if log_channel_id:
-                log_channel_obj = ctx.guild.get_channel(log_channel_id)
-                if log_channel_obj:
-                    embed.add_field(
-                        name="Log Channel", 
-                        value=f"{log_channel_obj.mention}",
-                        inline=True
-                    )
-
-            announcement_channel_id = guild_settings.get_announcement_channel(guild_id)
-            if announcement_channel_id:
-                announcement_channel_obj = ctx.guild.get_channel(announcement_channel_id)
-                if announcement_channel_obj:
-                    embed.add_field(
-                        name="Announcement Channel", 
-                        value=f"{announcement_channel_obj.mention}",
-                        inline=True
-                    )
-
-            admin_role_id = guild_settings.get_admin_role(guild_id)
-            if admin_role_id:
-                admin_role_obj = ctx.guild.get_role(admin_role_id)
-                if admin_role_obj:
-                    embed.add_field(
-                        name="Admin Role", 
-                        value=f"{admin_role_obj.mention}",
-                        inline=True
-                    )
-
-            # If no settings were provided, show current settings
-            if not (log_channel or announcement_channel or admin_role):
-                if not (log_channel_id or announcement_channel_id or admin_role_id):
-                    embed.description = "⚠️ No raid protection settings have been configured yet. Please specify at least one channel or role."
-                    embed.color = discord.Color.orange()
-                else:
-                    embed.description = "Current raid protection settings:"
-
-            # Send the response
-            await ctx.send(embed=embed)
-
-            # Test the log channel if it was set
-            if log_channel and guild_settings.get_log_channel(guild_id):
-                try:
-                    test_log = discord.Embed(
-                        title="✅ Log Channel Setup",
-                        description="This channel has been configured as the raid protection log channel.",
-                        color=discord.Color.blue()
-                    )
-                    test_log.add_field(
-                        name="Configuration", 
-                        value=f"Setup by: {ctx.author.mention}\nTimestamp: {discord.utils.format_dt(datetime.now())}",
-                        inline=False
-                    )
-
-                    await log_channel.send(embed=test_log)
-                except Exception as e:
-                    logging.error(f"Error sending test message to log channel: {e}")
-
-            # Test the announcement channel if it was set
-            if announcement_channel and guild_settings.get_announcement_channel(guild_id):
-                try:
-                    test_announcement = discord.Embed(
-                        title="✅ Announcement Channel Setup",
-                        description="This channel has been configured as the raid protection announcement channel.",
-                        color=discord.Color.blue()
-                    )
-                    test_announcement.add_field(
-                        name="Configuration", 
-                        value=f"Setup by: {ctx.author.mention}\nTimestamp: {discord.utils.format_dt(datetime.now())}",
-                        inline=False
-                    )
-
-                    await announcement_channel.send(embed=test_announcement)
-                except Exception as e:
-                    logging.error(f"Error sending test message to announcement channel: {e}")
-
-        # Main raid command group (slash commands)
-        raid_group = app_commands.Group(name="raid", description="Raid protection commands")
-
-        # On command
-        @raid_group.command(name="on", description="Activate raid mode - locks down all text channels")
+        @raid_group.command(name="on", description="Activer le mode raid — verrouille les salons")
         async def raid_on(interaction: discord.Interaction):
-            # Check permissions
             if not has_raid_mode_permission(interaction.user):
                 await interaction.response.send_message(
                     get_text(interaction.guild.id, 'no_permission'),
                     ephemeral=True
                 )
                 return
-
+            if not self._raid_system_enabled(interaction.guild.id):
+                await interaction.response.send_message(
+                    "❌ Le mode anti-raid est désactivé sur ce serveur (tableau de bord).",
+                    ephemeral=True,
+                )
+                return
+            setup_error = self._validate_raid_setup(interaction.guild)
+            if setup_error:
+                await interaction.response.send_message(setup_error, ephemeral=True)
+                return
             await self._enable_raid_mode(interaction)
 
-        # Off command
-        @raid_group.command(name="off", description="Deactivate raid mode - restores previous channel permissions")
+        @raid_group.command(name="off", description="Désactiver le mode raid — restaure les permissions")
         async def raid_off(interaction: discord.Interaction):
-            # Check permissions
             if not has_raid_mode_permission(interaction.user):
                 await interaction.response.send_message(
                     get_text(interaction.guild.id, 'no_permission'),
                     ephemeral=True
                 )
                 return
-
             await self._disable_raid_mode(interaction)
 
-        # Status command
-        @raid_group.command(name="status", description="Check the current status of raid mode")
+        @raid_group.command(name="status", description="Statut du mode raid et de la configuration")
         async def raid_status(interaction: discord.Interaction):
             await self._check_raid_status(interaction)
 
-        # Help command
-        @raid_group.command(name="help", description="Show help information about using the bot")
+        @raid_group.command(name="help", description="Aide sur la protection anti-raid")
         async def raid_help(interaction: discord.Interaction):
             embed = discord.Embed(
-                title="🛡️ Raid Protection Bot Help",
-                description="This bot helps protect your server against raids and spam attacks.",
-                color=discord.Color.blue()
-            )
-
-            embed.add_field(
-                name="Main Commands",
-                value=(
-                    "🟢 `/raid on` - Activate raid protection mode\n"
-                    "🔴 `/raid off` - Deactivate raid protection mode\n"
-                    "ℹ️ `/raid status` - Check current raid mode status\n"
-                    "⚙️ `/raid setup` - Configure bot settings"
+                title="🛡️ Aide — Protection Anti-Raid",
+                description=(
+                    "PopoCorps protège votre serveur contre le spam massif et les raids coordonnés."
                 ),
-                inline=False
+                color=discord.Color.blue(),
             )
-
             embed.add_field(
-                name="Required Permissions",
-                value="Users need `Manage Server` permission or a configured admin role to use these commands.",
-                inline=False
-            )
-
-            embed.add_field(
-                name="Setup Guide",
+                name="Commandes principales",
                 value=(
-                    "1. Use `/raid setup` to configure log and announcement channels\n"
-                    "2. Ensure the bot has necessary permissions\n"
-                    "3. Test the bot with `/raid status`"
+                    "🟢 `/raid on` — Active le mode raid (double scan + verrouillage)\n"
+                    "🔴 `/raid off` — Désactive et restaure les permissions\n"
+                    "ℹ️ `/raid status` — Affiche l'état actuel\n"
+                    "🛠️ `/setup` — Configure logs, annonces, rôles admin/membre"
                 ),
-                inline=False
+                inline=False,
             )
-
+            embed.add_field(
+                name="Pendant le mode raid",
+                value=(
+                    "• Verrouillage des salons pour le rôle membre\n"
+                    "• Pause des invitations\n"
+                    "• Suppression auto des messages de spammeurs\n"
+                    "• Timeout 10 min des comptes floodant"
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="Surveillance 24/7",
+                value=(
+                    "Le bot détecte les attaques coordonnées et les raids "
+                    "(nouveaux comptes + spam). Active **auto-raid** dans le "
+                    "tableau de bord pour un verrouillage automatique."
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="Permissions requises",
+                value="Gérer le serveur, rôle admin configuré dans `/setup`, ou propriétaire.",
+                inline=False,
+            )
             await interaction.response.send_message(embed=embed, ephemeral=True)
-
-        # Note: Setup command has been replaced by /setup command in setup_system.py
 
         # Add the slash commands to the bot
         self.bot.tree.add_command(raid_group)
@@ -366,118 +267,171 @@ class RaidMode(commands.Cog):
         except Exception as e:
             logging.error(f"Error saving raid state for guild {guild_id}: {e}")
 
-    async def _setup_raid_channels(self, interaction, log_channel, announcement_channel, admin_role):
-        """Set up log and announcement channels for raid notifications."""
-        try:
-            guild_id = interaction.guild.id
+    async def _enable_raid_mode(self, interaction, auto_reason: str | None = None):
+        """Active le mode raid — scan spam puis verrouillage des salons."""
+        guild_id = interaction.guild.id
+        auto_mode = auto_reason is not None
 
-            # Acknowledge the interaction immediately with a temporary response
-            try:
-                await interaction.response.defer(ephemeral=True)
-            except discord.errors.NotFound:
-                # If interaction expired, return early
+        if self.raid_active.get(guild_id, False):
+            if not auto_mode and hasattr(interaction.response, "send_message"):
+                await interaction.response.send_message("⚠️ Le mode raid est déjà actif !", ephemeral=True)
+            return
+
+        if not auto_mode and hasattr(interaction, "response") and hasattr(interaction.response, "defer"):
+            await interaction.response.defer()
+
+        progress_message = None
+        try:
+            if not auto_mode:
+                if hasattr(interaction, "followup") and hasattr(interaction.followup, "send"):
+                    progress_message = await interaction.followup.send("🔍 Analyse du spam en cours...")
+                else:
+                    progress_message = await interaction.send("🔍 Analyse du spam en cours...")
+
+            reset_tracking(guild_id)
+            self.raid_active[guild_id] = True
+
+            if not auto_mode and progress_message:
+                for label, seconds in [("Phase 1", 3), ("Phase 2", 3)]:
+                    for i in range(seconds, 0, -1):
+                        await progress_message.edit(content=f"🔍 {label} : scan anti-spam ({i}s)")
+                        await asyncio.sleep(1)
+
+            all_detected_spammers = get_spammer_ids(guild_id)
+            total_unique_spammers = len(all_detected_spammers)
+
+            if all_detected_spammers:
+                audit_logger = self.bot.get_cog('AuditLogger')
+                if audit_logger:
+                    try:
+                        await audit_logger.log_spam_detection(
+                            interaction.guild, all_detected_spammers, total_unique_spammers * 3
+                        )
+                    except Exception as e:
+                        logging.error("Erreur alerte spam: %s", e)
+
+            if progress_message:
+                await progress_message.edit(
+                    content=f"✅ Scan terminé — {total_unique_spammers} menace(s) détectée(s). Verrouillage..."
+                )
+
+            member_role = self.get_member_role(interaction.guild)
+            if not member_role:
+                self.raid_active[guild_id] = False
+                self.save_raid_state(guild_id)
+                if not auto_mode:
+                    await interaction.followup.send(
+                        "❌ Rôle membre non configuré. Utilise `/setup`.", ephemeral=True
+                    )
                 return
 
-            # Update settings based on provided parameters
-            if log_channel:
-                guild_settings.set_log_channel(guild_id, log_channel.id)
-                
-            if announcement_channel:
-                guild_settings.set_announcement_channel(guild_id, announcement_channel.id)
-                
-            if admin_role:
-                guild_settings.set_admin_role(guild_id, admin_role.id)
-
-            # Create response embed
-            embed = discord.Embed(
-                title="✅ Raid Protection Setup",  
-                description="Your raid protection settings have been updated.",
-                color=discord.Color.green()
-            )
-            
-            # Add fields for current settings
+            self.channel_states[guild_id] = {}
+            self.invite_states[guild_id] = {}
             log_channel_id = guild_settings.get_log_channel(guild_id)
-            if log_channel_id:
-                log_channel_obj = interaction.guild.get_channel(log_channel_id)
-                if log_channel_obj:
-                    embed.add_field(
-                        name="Log Channel", 
-                        value=f"{log_channel_obj.mention}",
-                        inline=True
-                    )
-                    
             announcement_channel_id = guild_settings.get_announcement_channel(guild_id)
-            if announcement_channel_id:
-                announcement_channel_obj = interaction.guild.get_channel(announcement_channel_id)
-                if announcement_channel_obj:
-                    embed.add_field(
-                        name="Announcement Channel", 
-                        value=f"{announcement_channel_obj.mention}",
-                        inline=True
-                    )
 
-            admin_role_id = guild_settings.get_admin_role(guild_id)
-            if admin_role_id:
-                admin_role_obj = interaction.guild.get_role(admin_role_id)
-                if admin_role_obj:
-                    embed.add_field(
-                        name="Admin Role", 
-                        value=f"{admin_role_obj.mention}",
-                        inline=True
-                    )
-
-            # If no settings were provided, show current settings
-            if not (log_channel or announcement_channel or admin_role):
-                if not (log_channel_id or announcement_channel_id or admin_role_id):
-                    embed.description = "⚠️ No raid protection settings have been configured yet. Please specify at least one channel or role."
-                    embed.color = discord.Color.orange()
-                else:
-                    embed.description = "Current raid protection settings:"
-
-            # Send the response
-            await interaction.followup.send(embed=embed, ephemeral=True)
-
-            # Test the log channel if it was set
-            if log_channel and guild_settings.get_log_channel(guild_id):
+            locked = 0
+            for channel in interaction.guild.text_channels:
+                if channel.id in (log_channel_id, announcement_channel_id):
+                    continue
                 try:
-                    test_log = discord.Embed(
-                        title="✅ Log Channel Setup",
-                        description="This channel has been configured as the raid protection log channel.",
-                        color=discord.Color.blue()
-                    )
-                    test_log.add_field(
-                        name="Configuration", 
-                        value=f"Setup by: {interaction.user.mention}\nTimestamp: {discord.utils.format_dt(datetime.now())}",
-                        inline=False
-                    )
-                    await log_channel.send(embed=test_log)
+                    current_perms = channel.overwrites_for(member_role)
+                    self.channel_states[guild_id][channel.id] = {
+                        'role_id': member_role.id,
+                        'send_messages': current_perms.send_messages,
+                        'send_messages_in_threads': current_perms.send_messages_in_threads,
+                        'create_public_threads': current_perms.create_public_threads,
+                        'create_private_threads': current_perms.create_private_threads,
+                        'add_reactions': current_perms.add_reactions,
+                    }
+                    new_perms = discord.PermissionOverwrite()
+                    new_perms.send_messages = False
+                    new_perms.send_messages_in_threads = False
+                    new_perms.create_public_threads = False
+                    new_perms.create_private_threads = False
+                    new_perms.add_reactions = False
+                    await channel.set_permissions(member_role, overwrite=new_perms)
+                    locked += 1
+                except discord.Forbidden:
+                    logging.warning("Pas la permission sur le salon %s", channel.name)
                 except Exception as e:
-                    logging.error(f"Error sending test message to log channel: {e}")
+                    logging.error("Erreur verrouillage %s: %s", channel.name, e)
 
-            # Test the announcement channel if it was set
-            if announcement_channel and guild_settings.get_announcement_channel(guild_id):
+            self.invite_states[guild_id] = {'invites_paused': False}
+            if interaction.guild.me.guild_permissions.manage_guild:
                 try:
-                    test_announcement = discord.Embed(
-                        title="✅ Announcement Channel Setup",
-                        description="This channel has been configured as the raid protection announcement channel.",
-                        color=discord.Color.blue()
+                    await interaction.guild.edit(
+                        invites_disabled=True,
+                        reason="Mode raid activé",
                     )
-                    test_announcement.add_field(
-                        name="Configuration", 
-                        value=f"Setup by: {interaction.user.mention}\nTimestamp: {discord.utils.format_dt(datetime.now())}",
-                        inline=False
-                    )
-                    await announcement_channel.send(embed=test_announcement)
+                    self.invite_states[guild_id]['invites_paused'] = True
                 except Exception as e:
-                    logging.error(f"Error sending test message to announcement channel: {e}")
+                    logging.error("Erreur pause invitations: %s", e)
+
+            self.save_raid_state(guild_id)
+            actor = interaction.user
+            log_raid_event(interaction.guild, actor, "enabled")
+            self.start_spam_cleanup(interaction.guild)
+
+            title = "🚨 MODE RAID ACTIVÉ 🚨"
+            if auto_reason:
+                title = "🚨 MODE RAID AUTO-ACTIVÉ 🚨"
+            description = (
+                f"**{locked}** salon(s) verrouillé(s) pour {member_role.mention}. "
+                "Les invitations sont suspendues."
+            )
+            if auto_reason:
+                description = f"{description}\n\n**Déclencheur :** {auto_reason}"
+
+            embed = discord.Embed(title=title, description=description, color=discord.Color.red())
+            embed.add_field(name="Activé par", value=actor.mention, inline=False)
+            embed.add_field(name="Désactiver", value="Utilise `/raid off` quand la menace est passée.", inline=False)
+
+            if progress_message:
+                await progress_message.delete()
+            if not auto_mode:
+                await interaction.followup.send(embed=embed)
+
+            await self._notify_raid_channels(
+                interaction.guild, guild_id, embed, all_detected_spammers, auto_mode
+            )
 
         except Exception as e:
-            logging.error(f"Error in _setup_raid_channels: {e}")
-            try:
-                if not interaction.response.is_done():
-                    await interaction.response.send_message("An error occurred while setting up raid channels.", ephemeral=True)
-            except Exception:
-                pass
+            self.raid_active[guild_id] = False
+            self.save_raid_state(guild_id)
+            if not auto_mode:
+                await interaction.followup.send(f"⚠️ Erreur activation mode raid : {e}")
+            logging.error("Erreur mode raid guild %s: %s", interaction.guild.name, e)
+
+    async def _notify_raid_channels(self, guild, guild_id, embed, spammer_ids, auto_mode):
+        """Envoie les notifications dans les salons log et annonces."""
+        log_channel_id = guild_settings.get_log_channel(guild_id)
+        if log_channel_id:
+            log_channel = guild.get_channel(log_channel_id)
+            if log_channel:
+                try:
+                    await log_channel.send(embed=embed)
+                    if spammer_ids and not auto_mode:
+                        await self.ask_spam_cleanup(guild, spammer_ids)
+                except Exception as e:
+                    logging.error("Erreur notification log raid: %s", e)
+
+        announcement_channel_id = guild_settings.get_announcement_channel(guild_id)
+        if announcement_channel_id:
+            announcement_channel = guild.get_channel(announcement_channel_id)
+            if announcement_channel:
+                try:
+                    ann = discord.Embed(
+                        title="🚨 MODE RAID ACTIVÉ",
+                        description=(
+                            "Les salons sont verrouillés en raison d'une attaque. "
+                            "Merci de patienter pendant que l'équipe modère."
+                        ),
+                        color=discord.Color.red(),
+                    )
+                    await announcement_channel.send(embed=ann)
+                except Exception as e:
+                    logging.error("Erreur annonce raid: %s", e)
 
     def get_member_role(self, guild):
         """Get the configured member role for the guild."""
@@ -485,355 +439,6 @@ class RaidMode(commands.Cog):
         if member_role_id:
             return guild.get_role(member_role_id)
         return None
-
-    async def _enable_raid_mode(self, interaction):
-        """Enable raid mode - scans for spam for 3 seconds then locks down channels."""
-        guild_id = interaction.guild.id
-
-        # Check if raid mode is already active
-        if self.raid_active.get(guild_id, False):
-            if hasattr(interaction.response, "send_message"):
-                await interaction.response.send_message("⚠️ Raid mode is already active!", ephemeral=True)
-            else:
-                await interaction.send("⚠️ Raid mode is already active!")
-            return
-
-        # Acknowledge the interaction immediately
-        if hasattr(interaction, "response") and hasattr(interaction.response, "defer"):
-            await interaction.response.defer()
-
-        try:
-            # Send initial progress message for spam scanning
-            if hasattr(interaction, "followup") and hasattr(interaction.followup, "send"):
-                progress_message = await interaction.followup.send("🔍 Scanning for spam activity... (3 seconds)")
-            else:
-                progress_message = await interaction.send("🔍 Scanning for spam activity... (3 seconds)")
-
-            # Mark raid mode as active for spam detection, but don't lock channels yet
-            self.raid_active[guild_id] = True
-
-            # Reset any previous tracking data
-            reset_tracking(guild_id)
-
-            # Begin DOUBLE scanning for spam for enhanced reliability
-            scanning_start_time = datetime.now()
-
-            # FIRST SCAN: Initial 3-second scan
-            await progress_message.edit(content="🔍 Phase 1: Initial spam scan... (3 seconds)")
-            for i in range(3, 0, -1):
-                await progress_message.edit(content=f"🔍 Phase 1: Initial spam scan... ({i} seconds remaining)")
-                await asyncio.sleep(1)
-
-            # Get first scan results
-            first_scan_spammers = get_spammer_ids(guild_id).copy()
-            first_scan_count = len(first_scan_spammers)
-
-            # SECOND SCAN: Enhanced 3-second verification scan
-            await progress_message.edit(content="🔍 Phase 2: Verification scan... (3 seconds)")
-            for i in range(3, 0, -1):
-                await progress_message.edit(content=f"🔍 Phase 2: Verification scan... ({i} seconds remaining)")
-                await asyncio.sleep(1)
-
-            # Get second scan results
-            second_scan_spammers = get_spammer_ids(guild_id)
-            second_scan_count = len(second_scan_spammers)
-
-            # Combine results for maximum reliability
-            all_detected_spammers = first_scan_spammers.union(second_scan_spammers)
-            total_unique_spammers = len(all_detected_spammers)
-
-            # Enhanced reporting with double scan data
-            if all_detected_spammers:
-                audit_logger = self.bot.get_cog('AuditLogger')
-                if audit_logger:
-                    try:
-                        # Create detailed double scan report
-                        embed = discord.Embed(
-                            title="🚨 DOUBLE-SCAN SPAM DETECTION COMPLETE",
-                            color=discord.Color.red(),
-                            timestamp=datetime.now()
-                        )
-                        
-                        embed.add_field(name="Scan Method", value="Enhanced Double-Scan Verification", inline=False)
-                        embed.add_field(name="First Scan Results", value=f"{first_scan_count} spammers detected", inline=True)
-                        embed.add_field(name="Second Scan Results", value=f"{second_scan_count} spammers detected", inline=True)
-                        embed.add_field(name="Total Unique Threats", value=f"{total_unique_spammers} confirmed spammers", inline=True)
-                        
-                        # Reliability indicator
-                        if first_scan_count > 0 and second_scan_count > 0:
-                            reliability = "🔴 CRITICAL - Confirmed by both scans"
-                        elif total_unique_spammers > 0:
-                            reliability = "🟠 HIGH - Detected in at least one scan"
-                        else:
-                            reliability = "🟢 LOW - Clean server detected"
-                            
-                        embed.add_field(name="Threat Level", value=reliability, inline=False)
-                        
-                        # Send enhanced alert
-                        total_messages = total_unique_spammers * 6  # Estimate for double scan
-                        await audit_logger.log_spam_detection(interaction.guild, all_detected_spammers, total_messages)
-                        
-                    except Exception as e:
-                        logging.error(f"Error sending double scan alert: {e}")
-
-            await progress_message.edit(content=f"✅ Double scan complete: {total_unique_spammers} threats detected")
-
-            # After spam scanning, prepare for lockdown
-            self.channel_states[guild_id] = {}
-            self.invite_states[guild_id] = {}
-
-            # Update progress message for channel lockdown
-            await progress_message.edit(content="🔒 Scan complete. Locking down channels... (0%)")
-
-            # Count total channels for progress tracking
-            total_channels = len(interaction.guild.text_channels)
-            processed_channels = 0
-
-            # Lock all text channels
-            for channel in interaction.guild.text_channels:
-                try:
-                    # Skip announcement channel if it exists
-                    announcement_channel_id = guild_settings.get_announcement_channel(guild_id)
-                    if announcement_channel_id and channel.id == announcement_channel_id:
-                        continue
-
-                    # Skip log channel if it exists
-                    log_channel_id = guild_settings.get_log_channel(guild_id)
-                    if log_channel_id and channel.id == log_channel_id:
-                        continue
-
-                    # Get member role
-                    member_role = self.get_member_role(interaction.guild)
-                    if not member_role:
-                        await interaction.followup.send("⚠️ No member role configured. Please use `/raid setup` to set one.", ephemeral=True)
-                        return
-
-                    # Save current permissions
-                    current_perms = channel.overwrites_for(member_role)
-
-                    # Store original permissions
-                    self.channel_states[guild_id][channel.id] = {
-                        'send_messages': current_perms.send_messages,
-                        'role_id': member_role.id
-                    }
-
-                    # Set new permissions - disable sending messages
-                    new_perms = discord.PermissionOverwrite()
-                    new_perms.send_messages = False
-                    new_perms.send_messages_in_threads = False 
-                    new_perms.create_public_threads = False
-                    new_perms.create_private_threads = False
-                    new_perms.add_reactions = False
-                    await channel.set_permissions(member_role, overwrite=new_perms)
-
-                    # Update progress
-                    processed_channels += 1
-                    if processed_channels % 5 == 0 or processed_channels == total_channels:
-                        progress_percentage = int((processed_channels / total_channels) * 100)
-                        await progress_message.edit(
-                            content=f"🔒 Activating raid mode... ({progress_percentage}%)"
-                        )
-
-                except discord.Forbidden:
-                    logging.warning(f"Missing permissions to modify channel {channel.name} in guild {interaction.guild.name}")
-                except Exception as e:
-                    logging.error(f"Error locking channel {channel.name}: {e}")
-
-            # Disable invites by disabling the create_instant_invite permission for everyone
-            try:
-                # Use Discord's native Security Actions to pause invites and DMs
-                try:
-                    # Store the current invite and DM state
-                    self.invite_states[guild_id] = {
-                        'invites_paused': False,
-                        'dms_paused': False
-                    }
-
-                    # STEP 1: Pause invites using Discord's built-in features
-                    if interaction.guild.me.guild_permissions.manage_guild:
-                        try:
-                            # Always explicitly make sure community is enabled first
-                            await interaction.guild.edit(
-                                community=True,  # Enable community features
-                                reason="Raid mode activated - enabling community features"
-                            )
-                            logging.info(f"Enabled community features in {interaction.guild.name}")
-
-                            # Then in a separate call, disable invites
-                            await interaction.guild.edit(
-                                invites_disabled=True,  # Disable new invites
-                                reason="Raid mode activated - pausing invites"
-                            )
-                            self.invite_states[guild_id]['invites_paused'] = True
-                            logging.info(f"Paused invites in {interaction.guild.name}")
-
-                            # Update progress message
-                            await progress_message.edit(content="🔒 Activating raid mode... (Paused invites)")
-                        except Exception as e:
-                            logging.error(f"Error pausing invites: {e}")
-                            await progress_message.edit(content="🔒 Activating raid mode... (Error pausing invites)")
-                    else:
-                        logging.warning(f"Missing permissions to pause invites in {interaction.guild.name}")
-                        await progress_message.edit(content="🔒 Activating raid mode... (No permission to pause invites)")
-
-                    # STEP 2: Pause DMs using Discord's built-in features
-                    if interaction.guild.me.guild_permissions.manage_guild:
-                        try:
-                            # There's no direct API for pausing DMs, but we can restrict it with rules screening
-                            await interaction.guild.edit(
-                                premium_progress_bar_enabled=False,  # Related to community features
-                                rules_channel=interaction.guild.rules_channel,  # Keep existing rules channel if any
-                                reason="Raid mode activated - pausing DMs"
-                            )
-                            self.invite_states[guild_id]['dms_paused'] = True
-                            logging.info(f"Attempted to pause DMs in {interaction.guild.name}")
-
-                            # Update progress message
-                            await progress_message.edit(content="🔒 Activating raid mode... (Paused invites and DMs)")
-                        except Exception as e:
-                            logging.error(f"Error pausing DMs: {e}")
-
-                except Exception as e:
-                    logging.error(f"Error pausing invites and DMs: {e}")
-
-                # Log the action
-                logging.info(f"Disabled invites in {interaction.guild.name}")
-            except Exception as e:
-                logging.error(f"Error managing invites: {e}")
-
-            # Save raid state
-            self.save_raid_state(guild_id)
-
-            # Log the event
-            log_raid_event(interaction.guild, interaction.user, "enabled")
-
-            # Start spam detection and cleanup
-            reset_tracking(guild_id)  # Reset any previous tracking data
-
-            # Set up periodic spam cleanup task
-            self.start_spam_cleanup(interaction.guild)
-
-            # Send confirmation with warning style
-            embed = discord.Embed(
-                title="🚨 RAID MODE ACTIVATED 🚨",
-                description="All channels have been locked to prevent spam messages. New members cannot join the server and DMs between members are restricted during raid mode.",
-                color=discord.Color.red()
-            )
-            embed.add_field(
-                name="Activated by", 
-                value=f"{interaction.user.mention} ({interaction.user.display_name})",
-                inline=False
-            )
-            embed.add_field(
-                name="Deactivate", 
-                value="Use `/raid off` to restore normal operations when the threat has passed.",
-                inline=False
-            )
-
-            await progress_message.delete()
-            await interaction.followup.send(embed=embed)
-
-            # Send notification to log channel if configured
-            log_channel_id = guild_settings.get_log_channel(guild_id)
-            if log_channel_id:
-                log_channel = interaction.guild.get_channel(log_channel_id)
-                if log_channel:
-                    try:
-                        log_embed = discord.Embed(
-                            title="🚨 RAID MODE ACTIVATED",
-                            description="All channels have been locked to prevent spam messages. New members cannot join the server and DMs between members are restricted during raid mode.",
-                            color=discord.Color.red()
-                        )
-                        log_embed.add_field(
-                            name="Activated by", 
-                            value=f"{interaction.user.mention} ({interaction.user.display_name})",
-                            inline=False
-                        )
-                        log_embed.add_field(
-                            name="Time", 
-                            value=f"{discord.utils.format_dt(datetime.now())}",
-                            inline=False
-                        )
-
-                        await log_channel.send(embed=log_embed)
-
-                        # Report scan results to log channel
-                        spammer_ids = get_spammer_ids(guild_id)
-
-                        if spammer_ids:
-                            # Create spam report for detected spammers
-                            spam_embed = discord.Embed(
-                                title="🚨 SPAM DETECTION REPORT",
-                                description=f"Detected **{len(spammer_ids)}** potential spammers during initial 3-second scan.",
-                                color=discord.Color.red(),
-                                timestamp=datetime.now()
-                            )
-
-                            # List all detected spammers
-                            spammer_info = ""
-                            for user_id in spammer_ids:
-                                user = interaction.guild.get_member(user_id)
-                                user_name = user.name if user else f"Unknown User ({user_id})"
-                                spammer_info += f"• **{user_name}** (ID: {user_id})\n"
-
-                            spam_embed.add_field(
-                                name="Detected Spammers",
-                                value=spammer_info,
-                                inline=False
-                            )
-
-                            spam_embed.set_footer(text=f"Scan duration: 3 seconds | Server: {interaction.guild.name}")
-
-                            # Ask if messages should be deleted
-                            should_delete_messages = await self.ask_spam_cleanup(interaction.guild, spammer_ids)
-
-                            # Delete messages if confirmed
-                            if should_delete_messages:
-                                await cleanup_spam(interaction.guild, log_channel, delete_messages=True)
-                            else:
-                                await cleanup_spam(interaction.guild, log_channel, delete_messages=False)
-                        else:
-                            # Report that no spam was detected
-                            no_spam_embed = discord.Embed(
-                                title="✅ SPAM DETECTION REPORT",
-                                description="No spam activity detected during initial 3-second scan.",
-                                color=discord.Color.green(),
-                                timestamp=datetime.now()
-                            )
-
-                            no_spam_embed.add_field(
-                                name="Status",
-                                value="Raid mode is active and the server is now locked down. Continuing to monitor for spam activity.",
-                                inline=False
-                            )
-
-                            no_spam_embed.set_footer(text=f"Scan duration: 3 seconds | Server: {interaction.guild.name}")
-
-                            await log_channel.send(embed=no_spam_embed)
-
-                    except Exception as e:
-                        logging.error(f"Error sending notification to log channel: {e}")
-
-            # Send notification to announcement channel if configured
-            announcement_channel_id = guild_settings.get_announcement_channel(guild_id)
-            if announcement_channel_id:
-                announcement_channel = interaction.guild.get_channel(announcement_channel_id)
-                if announcement_channel:
-                    try:
-                        announcement_embed = discord.Embed(
-                            title="🚨 RAID MODE ACTIVATED 🚨",
-                            description="**All channels have been locked due to a raid. New members cannot join and direct messages are restricted during this time.**\nPlease wait for the moderators to resolve the situation.",
-                            color=discord.Color.red()
-                        )
-
-                        await announcement_channel.send(embed=announcement_embed)
-                    except Exception as e:
-                        logging.error(f"Error sending notification to announcement channel: {e}")
-
-        except Exception as e:
-            self.raid_active[guild_id] = False
-            await interaction.followup.send(f"⚠️ Error activating raid mode: {str(e)}")
-            logging.error(f"Error activating raid mode in guild {interaction.guild.name}: {e}")
 
     async def _disable_raid_mode(self, interaction):
         """Disable raid mode - restores previous channel permissions."""
@@ -867,73 +472,47 @@ class RaidMode(commands.Cog):
             for channel_id, permissions in stored_channels.items():
                 try:
                     channel = interaction.guild.get_channel(channel_id)
-                    if channel:
-                        default_role = interaction.guild.default_role
-                        current_perms = channel.overwrites_for(default_role)
+                    if not channel:
+                        continue
 
-                        # Restore original permissions
-                        new_perms = discord.PermissionOverwrite(**current_perms._values)
-                        new_perms.send_messages = permissions.get('send_messages')
-                        await channel.set_permissions(default_role, overwrite=new_perms)
+                    role_id = permissions.get('role_id')
+                    role = interaction.guild.get_role(role_id) if role_id else self.get_member_role(interaction.guild)
+                    if not role:
+                        continue
 
-                    # Update progress
+                    current_perms = channel.overwrites_for(role)
+                    new_perms = discord.PermissionOverwrite(**current_perms._values)
+                    for key in (
+                        'send_messages',
+                        'send_messages_in_threads',
+                        'create_public_threads',
+                        'create_private_threads',
+                        'add_reactions',
+                    ):
+                        if key in permissions:
+                            setattr(new_perms, key, permissions[key])
+                    await channel.set_permissions(role, overwrite=new_perms)
+
                     processed_channels += 1
-                    if processed_channels % 5 == 0 or processed_channels == total_channels:
+                    if total_channels and (processed_channels % 5 == 0 or processed_channels == total_channels):
                         progress_percentage = int((processed_channels / total_channels) * 100)
                         await progress_message.edit(
-                            content=f"🔓 Deactivating raid mode... ({progress_percentage}%)"
+                            content=f"🔓 Désactivation du mode raid... ({progress_percentage}%)"
                         )
 
                 except discord.Forbidden:
-                    logging.warning(f"Missing permissions to modify channel {channel_id} in guild {interaction.guild.name}")
+                    logging.warning("Pas la permission sur le salon %s", channel_id)
                 except Exception as e:
-                    logging.error(f"Error unlocking channel {channel_id}: {e}")
+                    logging.error("Erreur déverrouillage salon %s: %s", channel_id, e)
 
-            # Re-enable invites by restoring create_instant_invite permission
-            try:
-                # Update progress message
-                await progress_message.edit(content="🔓 Deactivating raid mode... (Restoring invite permissions)")
-
-                # Re-enable invites using Discord's built-in features
-                invite_state = self.invite_states.get(guild_id, {})
-
-                if interaction.guild.me.guild_permissions.manage_guild:
-                    # Always try to unpause invites when raid mode is turned off
-                    try:
-                        # Force disable invites_disabled regardless of previous state
-                        await interaction.guild.edit(
-                            invites_disabled=False,  # Ensure invites are enabled
-                            reason="Raid mode deactivated - enabling invites"
-                        )
-                        logging.info(f"Enabled invites in {interaction.guild.name}")
-
-                        # Also try to restore community features to default state
-                        await interaction.guild.edit(
-                            premium_progress_bar_enabled=True,  # Restore DM-related settings
-                            reason="Raid mode deactivated - restoring settings"
-                        )
-                        logging.info(f"Restored server settings in {interaction.guild.name}")
-                    except Exception as e:
-                        logging.error(f"Error restoring server settings: {e}")
-
-                    # For older implementation compatibility - re-enable create_instant_invite permission
-                    default_role = interaction.guild.default_role
-                    for channel in interaction.guild.channels:
-                        try:
-                            current_perms = channel.overwrites_for(default_role)
-                            new_perms = discord.PermissionOverwrite(**current_perms._values)
-                            new_perms.create_instant_invite = None
-                            await channel.set_permissions(default_role, overwrite=new_perms)
-                        except Exception as e:
-                            logging.error(f"Error restoring invites for channel {channel.name}: {e}")
-
-                else:
-                    logging.warning(f"Missing permissions to restore invites in {interaction.guild.name}")
-
-                # Log the action
-                logging.info(f"Re-enabled invites in {interaction.guild.name}")
-            except Exception as e:
-                logging.error(f"Error restoring invite permissions: {e}")
+            if interaction.guild.me.guild_permissions.manage_guild:
+                try:
+                    await interaction.guild.edit(
+                        invites_disabled=False,
+                        reason="Mode raid désactivé",
+                    )
+                except Exception as e:
+                    logging.error("Erreur réactivation invitations: %s", e)
 
             # Update raid mode status
             self.raid_active[guild_id] = False
@@ -951,12 +530,12 @@ class RaidMode(commands.Cog):
 
             # Send confirmation
             embed = discord.Embed(
-                title="✅ RAID MODE DEACTIVATED",
-                description="All channels have been restored to their previous state.",
+                title="✅ MODE RAID DÉSACTIVÉ",
+                description="Les permissions des salons ont été restaurées.",
                 color=discord.Color.green()
             )
             embed.add_field(
-                name="Deactivated by", 
+                name="Désactivé par",
                 value=f"{interaction.user.mention} ({interaction.user.display_name})",
                 inline=False
             )
@@ -1011,66 +590,84 @@ class RaidMode(commands.Cog):
             logging.error(f"Error deactivating raid mode in guild {interaction.guild.name}: {e}")
 
     async def _check_raid_status(self, interaction):
-        """Check the current status of raid mode."""
+        """Affiche le statut du mode raid."""
         guild_id = interaction.guild.id
         is_active = self.raid_active.get(guild_id, False)
+        member_role = self.get_member_role(interaction.guild)
 
-        # Create the embed
         if is_active:
             embed = discord.Embed(
-                title="🚨 Raid Mode Status",
-                description="**Raid mode is currently ACTIVE**\nAll channels are locked down to prevent spam. New members cannot join the server and direct messages between members are restricted during raid mode.",
-                color=discord.Color.red()
+                title="🚨 Statut du mode raid",
+                description=(
+                    "**Mode raid ACTIF**\n"
+                    "Les salons sont verrouillés pour le rôle membre. "
+                    "Les invitations sont suspendues."
+                ),
+                color=discord.Color.red(),
             )
-
-            # Add information about detected spammers
             spammer_ids = get_spammer_ids(guild_id)
             if spammer_ids:
                 spammer_info = ""
-                for user_id in spammer_ids:
+                for user_id in list(spammer_ids)[:10]:
                     user = interaction.guild.get_member(user_id)
-                    user_name = user.name if user else f"Unknown User ({user_id})"
-                    spammer_info += f"• **{user_name}** (ID: {user_id})\n"
-
+                    user_name = user.name if user else f"Inconnu ({user_id})"
+                    spammer_info += f"• **{user_name}**\n"
+                if len(spammer_ids) > 10:
+                    spammer_info += f"• … et {len(spammer_ids) - 10} autres"
                 embed.add_field(
-                    name=f"Detected Spammers ({len(spammer_ids)})",
+                    name=f"Spammeurs détectés ({len(spammer_ids)})",
                     value=spammer_info,
-                    inline=False
+                    inline=False,
                 )
         else:
             embed = discord.Embed(
-                title="✅ Raid Mode Status",
-                description="**Raid mode is currently INACTIVE**\nAll channels are operating normally.",
-                color=discord.Color.green()
+                title="✅ Statut du mode raid",
+                description="**Mode raid INACTIF** — fonctionnement normal.",
+                color=discord.Color.green(),
             )
 
-        # Add setup info if channels are configured
+        config_lines = []
         log_channel_id = guild_settings.get_log_channel(guild_id)
         announcement_channel_id = guild_settings.get_announcement_channel(guild_id)
+        admin_role_id = guild_settings.get_admin_role(guild_id)
 
-        if log_channel_id or announcement_channel_id:
-            setup_info = ""
-
-            if log_channel_id:
-                log_channel = interaction.guild.get_channel(log_channel_id)
-                if log_channel:
-                    setup_info += f"**Log Channel:** {log_channel.mention}\n"
-
-            if announcement_channel_id:
-                announcement_channel = interaction.guild.get_channel(announcement_channel_id)
-                if announcement_channel:
-                    setup_info += f"**Announcement Channel:** {announcement_channel.mention}\n"
-
-            if setup_info:
-                embed.add_field(name="Configuration", value=setup_info, inline=False)
+        if log_channel_id:
+            ch = interaction.guild.get_channel(log_channel_id)
+            config_lines.append(f"📝 Logs : {ch.mention if ch else 'salon supprimé'}")
         else:
+            config_lines.append("📝 Logs : non configuré")
+
+        if announcement_channel_id:
+            ch = interaction.guild.get_channel(announcement_channel_id)
+            config_lines.append(f"📢 Annonces : {ch.mention if ch else 'salon supprimé'}")
+        else:
+            config_lines.append("📢 Annonces : non configuré")
+
+        if admin_role_id:
+            role = interaction.guild.get_role(admin_role_id)
+            config_lines.append(f"👑 Admin : {role.mention if role else 'rôle supprimé'}")
+        else:
+            config_lines.append("👑 Admin : non configuré")
+
+        if member_role:
+            config_lines.append(f"👥 Membre : {member_role.mention}")
+        else:
+            config_lines.append("👥 Membre : **non configuré** (requis pour `/raid on`)")
+
+        auto_raid = guild_settings.get_setting(guild_id, "auto_raid_enabled", False)
+        config_lines.append(f"🤖 Auto-raid : {'activé' if auto_raid else 'désactivé'}")
+        config_lines.append(
+            f"⚙️ Système : {'activé' if self._raid_system_enabled(guild_id) else 'désactivé'}"
+        )
+
+        embed.add_field(name="Configuration", value="\n".join(config_lines), inline=False)
+        if not member_role or not log_channel_id:
             embed.add_field(
-                name="Setup Required", 
-                value="Use `/raid setup` to configure log and announcement channels.",
-                inline=False
+                name="Action requise",
+                value="Lance `/setup` pour configurer le serveur avant d'utiliser le mode raid.",
+                inline=False,
             )
 
-        # Send the response
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     async def ask_spam_cleanup(self, guild, spammer_ids):
@@ -1194,13 +791,7 @@ class RaidMode(commands.Cog):
 
                         # Clean up spam
                         if channels_to_clean or spammer_ids:
-                            # Only ask about message deletion if there are actual spammers
-                            if spammer_ids:
-                                should_delete_messages = await self.ask_spam_cleanup(guild, spammer_ids)
-                                await cleanup_spam(guild, log_channel, delete_messages=should_delete_messages)
-                            else:
-                                # Just clean up duplicate channels if any
-                                await cleanup_spam(guild, log_channel, delete_messages=False)
+                            await cleanup_spam(guild, log_channel, delete_messages=bool(spammer_ids))
 
                     # Wait for the next check
                     await asyncio.sleep(10)  # Check every 10 seconds

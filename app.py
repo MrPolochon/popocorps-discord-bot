@@ -791,7 +791,8 @@ def api_system_states():
             "audit_logs_enabled": guild_settings.get_setting(guild_id, 'audit_logs_enabled', True),
             "welcome_enabled": guild_settings.is_welcome_enabled(guild_id),
             "goodbye_enabled": guild_settings.is_goodbye_enabled(guild_id),
-            "raid_mode_enabled": guild_settings.get_setting(guild_id, 'raid_mode_enabled', True)
+            "raid_mode_enabled": guild_settings.get_setting(guild_id, 'raid_mode_enabled', True),
+            "auto_raid_enabled": guild_settings.get_setting(guild_id, 'auto_raid_enabled', False),
         }
         
         return jsonify(states)
@@ -837,6 +838,8 @@ def api_toggle_system():
             guild_settings.set_goodbye_enabled(guild_id, enabled)
         elif system == 'raid_mode_enabled':
             guild_settings.set_setting(guild_id, 'raid_mode_enabled', enabled)
+        elif system == 'auto_raid_enabled':
+            guild_settings.set_setting(guild_id, 'auto_raid_enabled', enabled)
         else:
             return jsonify({"error": "Unknown system"}), 400
         

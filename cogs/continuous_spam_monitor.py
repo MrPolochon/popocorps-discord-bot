@@ -38,11 +38,12 @@ class ContinuousSpamMonitor(commands.Cog):
     @commands.Cog.listener()
     async def on_message(self, message):
         """Monitor all messages for spam patterns"""
-        # Skip bots and DMs
         if message.author.bot or not message.guild:
             return
-            
+
         guild_id = message.guild.id
+        if not self.guild_settings.get_setting(guild_id, "continuous_spam_enabled", True):
+            return
         user_id = message.author.id
         current_time = datetime.now(timezone.utc)
         
@@ -212,6 +213,8 @@ class ContinuousSpamMonitor(commands.Cog):
         """Continuous background spam analysis every 30 seconds"""
         try:
             for guild in self.bot.guilds:
+                if not self.guild_settings.get_setting(guild.id, "continuous_spam_enabled", True):
+                    continue
                 await self.analyze_guild_patterns(guild)
         except Exception as e:
             logging.error(f"Error in continuous spam check: {e}")
@@ -299,6 +302,13 @@ class ContinuousSpamMonitor(commands.Cog):
                     except Exception as e:
                         logging.error(f"Error sending coordinated spam alert: {e}")
 
+        raid_cog = self.bot.get_cog("RaidMode")
+        if raid_cog:
+            await raid_cog.auto_activate_raid(
+                guild,
+                f"Spam coordonné : {len(user_ids)} utilisateurs, {message_count} messages",
+            )
+
     async def detect_raid_patterns(self, guild, recent_messages):
         """Detect raid patterns (new members immediately sending messages)"""
         # Get members who joined recently (last 10 minutes)
@@ -365,6 +375,13 @@ class ContinuousSpamMonitor(commands.Cog):
                         await audit_logger.send_critical_alert(guild, log_channel, alert_reason)
                     except Exception as e:
                         logging.error(f"Error sending raid pattern alert: {e}")
+
+        raid_cog = self.bot.get_cog("RaidMode")
+        if raid_cog:
+            await raid_cog.auto_activate_raid(
+                guild,
+                f"Pattern raid : {len(messaging_members)} nouveaux comptes actifs",
+            )
 
     @tasks.loop(hours=24)
     async def reset_daily_counters(self):

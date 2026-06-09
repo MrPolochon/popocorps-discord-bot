@@ -77,8 +77,13 @@ class HelpView(discord.ui.View):
                             "inline": False
                         },
                         {
-                            "name": "/raid setup",
-                            "value": "⚙️ **Configure les paramètres de raid**\nDéfinit les canaux de log, d'annonces et les rôles admin\n*Permissions: Gérer le serveur*",
+                            "name": "/setup",
+                            "value": "⚙️ **Configure le serveur**\nSalons logs/annonces, rôles admin et membre (requis pour le lockdown)\n*Permissions: Gérer le serveur*",
+                            "inline": False
+                        },
+                        {
+                            "name": "/raid help",
+                            "value": "📖 **Aide anti-raid détaillée**\nGuide complet du système de protection\n*Permissions: Aucune*",
                             "inline": False
                         }
                     ],
@@ -191,7 +196,7 @@ class HelpView(discord.ui.View):
                         },
                         {
                             "name": "🔍 Double Scan Anti-Raid",
-                            "value": "**Mode raid avec double vérification**\nQuand activé, le mode raid effectue:\n• Premier scan de 3 secondes pour détecter le spam\n• Deuxième scan de 3 secondes pour confirmation\n• Verrouillage automatique des canaux si menace confirmée\n• Rapport détaillé des spammeurs détectés aux modérateurs",
+                            "value": "**Mode raid avec double vérification**\nQuand activé via `/raid on` :\n• Double scan de 3 secondes pour détecter le spam\n• Verrouillage des salons pour le rôle membre\n• Pause des invitations\n• Suppression auto + timeout des flooders",
                             "inline": False
                         },
                         {
@@ -206,7 +211,7 @@ class HelpView(discord.ui.View):
                         },
                         {
                             "name": "📈 Niveaux de Risque Gradués",
-                            "value": "**Évaluation intelligente des menaces**\n• **Faible**: Activité suspecte mineure, log silencieux\n• **Modéré**: Comportement problématique, notification staff\n• **Élevé**: Menace confirmée, alerte critique immédiate\n• **Critique**: Attaque en cours, actions automatiques déclenchées",
+                            "value": "**Évaluation intelligente des menaces**\n• **Faible** : log silencieux\n• **Modéré** : notification staff\n• **Élevé** : alerte critique\n• **Critique** : auto-raid si activé dans le tableau de bord",
                             "inline": False
                         }
                     ],
@@ -299,8 +304,13 @@ class HelpView(discord.ui.View):
                             "inline": False
                         },
                         {
-                            "name": "/raid setup",
-                            "value": "⚙️ **Configure raid settings**\nSet log channels, announcement channels, and admin roles\n*Permissions: Manage Server*",
+                            "name": "/setup",
+                            "value": "⚙️ **Configure the server**\nLog/announcement channels, admin and member roles\n*Permissions: Manage Server*",
+                            "inline": False
+                        },
+                        {
+                            "name": "/raid help",
+                            "value": "📖 **Detailed raid protection help**\n*Permissions: None*",
                             "inline": False
                         }
                     ],

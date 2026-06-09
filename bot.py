@@ -102,11 +102,12 @@ async def on_guild_join(guild):
             color=discord.Color.blue()
         )
         embed.add_field(
-            name="Commands", 
-            value="`/raid on` - Activate raid mode\n"
-                  "`/raid off` - Deactivate raid mode\n"
-                  "`/raid status` - Check raid mode status\n"
-                  "`/raid setup` - Configure log and announcement channels", 
+            name="Commandes",
+            value="`/setup` — Configurer le serveur\n"
+                  "`/raid on` — Activer le mode raid\n"
+                  "`/raid off` — Désactiver le mode raid\n"
+                  "`/raid status` — Voir le statut\n"
+                  "`/raid help` — Aide détaillée",
             inline=False
         )
         embed.add_field(
