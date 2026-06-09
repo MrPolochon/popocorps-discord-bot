@@ -160,7 +160,7 @@ def login():
     error = None
     if request.method == "POST":
         password = request.form.get("password", "")
-        if hmac.compare_digest(password, DASHBOARD_PASSWORD):
+        if hmac.compare_digest(password.encode("utf-8"), DASHBOARD_PASSWORD.encode("utf-8")):
             # Mot de passe OK -> on lance la verification d'identite Discord
             session["pw_ok"] = True
             next_path = request.args.get("next", "")
