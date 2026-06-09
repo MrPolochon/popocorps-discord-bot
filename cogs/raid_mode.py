@@ -116,11 +116,33 @@ class RaidMode(commands.Cog):
     def _snapshot_channel_overwrite(self, overwrite: discord.PermissionOverwrite) -> dict:
         return {key: getattr(overwrite, key) for key in _LOCK_PERMISSION_KEYS}
 
+    def _overwrite_is_empty(self, perms: dict) -> bool:
+        return all(perms.get(key) is None for key in _LOCK_PERMISSION_KEYS)
+
+    async def _apply_channel_permission_snapshot(
+        self,
+        channel: discord.TextChannel,
+        role: discord.Role,
+        perms: dict,
+        *,
+        reason: str,
+    ):
+        """Reapplique un snapshot de permissions (ou supprime l'overwrite si vide)."""
+        if self._overwrite_is_empty(perms):
+            await channel.set_permissions(role, overwrite=None, reason=reason)
+            return
+        current = channel.overwrites_for(role)
+        merged = discord.PermissionOverwrite(**current._values)
+        for key in _LOCK_PERMISSION_KEYS:
+            if key in perms:
+                setattr(merged, key, perms[key])
+        await channel.set_permissions(role, overwrite=merged, reason=reason)
+
     async def _lock_channel_for_raid(
         self, guild: discord.Guild, channel: discord.TextChannel
     ) -> dict:
         """Verrouille un salon pour tous les roles non-staff."""
-        state = {"roles": {}}
+        state: dict = {"roles": {}, "admin_role": {}}
         for role_id in self._get_roles_to_lock_for_channel(guild, channel):
             role = guild.get_role(role_id)
             if not role:
@@ -131,6 +153,23 @@ class RaidMode(commands.Cog):
             for key in _LOCK_PERMISSION_KEYS:
                 setattr(merged, key, False)
             await channel.set_permissions(role, overwrite=merged, reason="Mode raid active")
+
+        admin_role_id = guild_settings.get_admin_role(guild.id)
+        if admin_role_id:
+            admin_role = guild.get_role(admin_role_id)
+            if admin_role:
+                admin_current = channel.overwrites_for(admin_role)
+                state["admin_role"][str(admin_role_id)] = self._snapshot_channel_overwrite(
+                    admin_current
+                )
+                admin_merged = discord.PermissionOverwrite(**admin_current._values)
+                admin_merged.send_messages = True
+                admin_merged.send_messages_in_threads = True
+                await channel.set_permissions(
+                    admin_role,
+                    overwrite=admin_merged,
+                    reason="Staff autorise pendant le mode raid",
+                )
         return state
 
     async def _unlock_channel_from_raid(
@@ -140,20 +179,31 @@ class RaidMode(commands.Cog):
         state: dict,
     ):
         """Restaure les permissions d'un salon apres le mode raid."""
-        roles_state = state.get("roles")
-        if roles_state:
-            for role_id_str, perms in roles_state.items():
-                role = guild.get_role(int(role_id_str))
-                if not role:
-                    continue
-                current = channel.overwrites_for(role)
-                merged = discord.PermissionOverwrite(**current._values)
-                for key in _LOCK_PERMISSION_KEYS:
-                    if key in perms:
-                        setattr(merged, key, perms[key])
-                await channel.set_permissions(
-                    role, overwrite=merged, reason="Mode raid desactive"
-                )
+        roles_state = state.get("roles") or {}
+        for role_id_str, perms in roles_state.items():
+            role = guild.get_role(int(role_id_str))
+            if not role:
+                continue
+            await self._apply_channel_permission_snapshot(
+                channel,
+                role,
+                perms,
+                reason="Mode raid desactive",
+            )
+
+        admin_state = state.get("admin_role") or {}
+        for role_id_str, perms in admin_state.items():
+            role = guild.get_role(int(role_id_str))
+            if not role:
+                continue
+            await self._apply_channel_permission_snapshot(
+                channel,
+                role,
+                perms,
+                reason="Mode raid desactive — restauration staff",
+            )
+
+        if roles_state or admin_state:
             return
 
         # Ancien format (une seule entree role_id)
@@ -161,12 +211,32 @@ class RaidMode(commands.Cog):
         role = guild.get_role(role_id) if role_id else self.get_member_role(guild)
         if not role:
             return
-        current = channel.overwrites_for(role)
-        merged = discord.PermissionOverwrite(**current._values)
-        for key in _LOCK_PERMISSION_KEYS:
-            if key in state:
-                setattr(merged, key, state[key])
-        await channel.set_permissions(role, overwrite=merged, reason="Mode raid desactive")
+        legacy_perms = {key: state[key] for key in _LOCK_PERMISSION_KEYS if key in state}
+        await self._apply_channel_permission_snapshot(
+            channel,
+            role,
+            legacy_perms,
+            reason="Mode raid desactive",
+        )
+
+    async def _rollback_channel_locks(self, guild: discord.Guild, guild_id: int):
+        """Annule un verrouillage partiel si l'activation echoue."""
+        stored = self.channel_states.pop(guild_id, None)
+        if not stored:
+            return
+        for channel_id, permissions in stored.items():
+            channel = guild.get_channel(channel_id)
+            if channel:
+                try:
+                    await self._unlock_channel_from_raid(guild, channel, permissions)
+                except Exception as e:
+                    logging.error("Rollback salon %s echoue: %s", channel_id, e)
+        invite_state = self.invite_states.pop(guild_id, None)
+        if invite_state and invite_state.get("invites_paused") and guild.me.guild_permissions.manage_guild:
+            try:
+                await guild.edit(invites_disabled=False, reason="Rollback mode raid")
+            except Exception as e:
+                logging.error("Rollback invitations echoue: %s", e)
 
     def _is_raid_exempt_channel(self, guild_id: int, channel_id: int) -> bool:
         log_channel_id = guild_settings.get_log_channel(guild_id)
@@ -466,28 +536,9 @@ class RaidMode(commands.Cog):
                     logging.warning("Pas la permission sur le salon %s", channel.name)
                 except Exception as e:
                     logging.error("Erreur verrouillage %s: %s", channel.name, e)
+                    raise
 
-            admin_role_id = guild_settings.get_admin_role(guild_id)
-            if admin_role_id:
-                admin_role = interaction.guild.get_role(admin_role_id)
-                if admin_role:
-                    for channel in interaction.guild.text_channels:
-                        if self._is_raid_exempt_channel(guild_id, channel.id):
-                            continue
-                        try:
-                            current = channel.overwrites_for(admin_role)
-                            merged = discord.PermissionOverwrite(**current._values)
-                            merged.send_messages = True
-                            merged.send_messages_in_threads = True
-                            await channel.set_permissions(
-                                admin_role,
-                                overwrite=merged,
-                                reason="Staff autorise pendant le mode raid",
-                            )
-                        except discord.Forbidden:
-                            pass
-
-            self.invite_states[guild_id] = {'invites_paused': False}
+            self.invite_states[guild_id] = {"invites_paused": False}
             if interaction.guild.me.guild_permissions.manage_guild:
                 try:
                     await interaction.guild.edit(
@@ -531,6 +582,7 @@ class RaidMode(commands.Cog):
 
         except Exception as e:
             self.raid_active[guild_id] = False
+            await self._rollback_channel_locks(interaction.guild, guild_id)
             self.save_raid_state(guild_id)
             if not auto_mode:
                 await interaction.followup.send(f"⚠️ Erreur activation mode raid : {e}")
@@ -579,50 +631,45 @@ class RaidMode(commands.Cog):
 
         # Check if raid mode is active
         if not self.raid_active.get(guild_id, False):
-            if hasattr(interaction.response, "send_message"):
-                await interaction.response.send_message("⚠️ Raid mode is not currently active!", ephemeral=True)
-            else:
-                await interaction.send("⚠️ Raid mode is not currently active!")
+            await interaction.response.send_message(
+                "⚠️ Le mode raid n'est pas actif.", ephemeral=True
+            )
             return
 
-        # Acknowledge the interaction immediately
-        if hasattr(interaction, "response") and hasattr(interaction.response, "defer"):
-            await interaction.response.defer()
+        await interaction.response.defer()
 
         try:
-            # Send initial progress message
-            if hasattr(interaction, "followup") and hasattr(interaction.followup, "send"):
-                progress_message = await interaction.followup.send("🔓 Deactivating raid mode... (0%)")
-            else:
-                progress_message = await interaction.send("🔓 Deactivating raid mode... (0%)")
+            progress_message = await interaction.followup.send("🔓 Désactivation du mode raid...")
 
-            # Count total channels for progress tracking
-            stored_channels = self.channel_states.get(guild_id, {})
+            stored_channels = dict(self.channel_states.get(guild_id, {}))
             total_channels = len(stored_channels)
             processed_channels = 0
+            restored = 0
+            failed = []
 
-            # Restore permissions for all channels
             for channel_id, permissions in stored_channels.items():
+                channel = interaction.guild.get_channel(channel_id)
+                if not channel:
+                    failed.append(f"salon {channel_id} introuvable")
+                    continue
                 try:
-                    channel = interaction.guild.get_channel(channel_id)
-                    if not channel:
-                        continue
                     await self._unlock_channel_from_raid(
                         interaction.guild, channel, permissions
                     )
-                    processed_channels += 1
-                    if total_channels and (
-                        processed_channels % 5 == 0 or processed_channels == total_channels
-                    ):
-                        progress_percentage = int((processed_channels / total_channels) * 100)
-                        await progress_message.edit(
-                            content=f"🔓 Désactivation du mode raid... ({progress_percentage}%)"
-                        )
-
+                    restored += 1
                 except discord.Forbidden:
-                    logging.warning("Pas la permission sur le salon %s", channel_id)
+                    failed.append(f"#{channel.name} (permission refusee)")
                 except Exception as e:
+                    failed.append(f"#{channel.name} ({e})")
                     logging.error("Erreur déverrouillage salon %s: %s", channel_id, e)
+                processed_channels += 1
+                if total_channels and (
+                    processed_channels % 5 == 0 or processed_channels == total_channels
+                ):
+                    pct = int((processed_channels / total_channels) * 100)
+                    await progress_message.edit(
+                        content=f"🔓 Désactivation du mode raid... ({pct}%)"
+                    )
 
             if interaction.guild.me.guild_permissions.manage_guild:
                 try:
@@ -632,31 +679,34 @@ class RaidMode(commands.Cog):
                     )
                 except Exception as e:
                     logging.error("Erreur réactivation invitations: %s", e)
+                    failed.append("invitations")
 
-            # Update raid mode status
             self.raid_active[guild_id] = False
             self.channel_states.pop(guild_id, None)
             self.invite_states.pop(guild_id, None)
-
-            # Save raid state
             self.save_raid_state(guild_id)
-
-            # Log the event
             log_raid_event(interaction.guild, interaction.user, "disabled")
-
-            # Stop the spam cleanup task for this guild
             self.stop_spam_cleanup(interaction.guild.id)
+            reset_tracking(guild_id)
 
-            # Send confirmation
+            description = (
+                f"**{restored}** salon(s) restauré(s) à leur état d'avant le raid.\n"
+                "Les invitations sont réactivées."
+            )
+            if failed:
+                description += f"\n\n⚠️ Problèmes sur : {', '.join(failed[:5])}"
+                if len(failed) > 5:
+                    description += f" (+{len(failed) - 5} autres)"
+
             embed = discord.Embed(
                 title="✅ MODE RAID DÉSACTIVÉ",
-                description="Les permissions des salons ont été restaurées.",
-                color=discord.Color.green()
+                description=description,
+                color=discord.Color.green() if not failed else discord.Color.orange(),
             )
             embed.add_field(
                 name="Désactivé par",
                 value=f"{interaction.user.mention} ({interaction.user.display_name})",
-                inline=False
+                inline=False,
             )
 
             await progress_message.delete()
