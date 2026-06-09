@@ -73,23 +73,35 @@ def _oauth_redirect_uri():
     return f"https://{host}/callback"
 
 
-def _user_is_staff_or_admin(user_id: int):
-    """Verifie via le bot que l'utilisateur est membre d'un serveur du bot et y
-    possede le role admin configure (ou la permission Administrateur/Gerer le serveur)."""
+def _check_dashboard_access(user_id: int) -> str:
+    """Verifie l'acces au dashboard via le bot.
+
+    L'acces exige STRICTEMENT le role admin configure dans le setup (aucun
+    contournement par les permissions Discord).
+
+    Retourne:
+    - 'ok'                 : l'utilisateur possede le role admin configure
+    - 'no_role_configured' : l'utilisateur est membre mais aucun role admin n'est configure
+    - 'denied'             : non membre, ou membre sans le role admin configure
+    """
     if not discord_bot:
-        return False
+        return "denied"
+    member_of_any = False
+    needs_config = False
     for guild in discord_bot.guilds:
         member = guild.get_member(user_id)
         if not member:
             continue
-        # Permissions Discord fortes
-        if member.guild_permissions.administrator or member.guild_permissions.manage_guild:
-            return True
-        # Role admin configure dans le setup
+        member_of_any = True
         admin_role_id = guild_settings.get_admin_role(guild.id)
-        if admin_role_id and any(r.id == admin_role_id for r in member.roles):
-            return True
-    return False
+        if not admin_role_id:
+            needs_config = True
+            continue
+        if any(r.id == admin_role_id for r in member.roles):
+            return "ok"
+    if needs_config:
+        return "no_role_configured"
+    return "denied"
 
 
 @app.before_request
@@ -216,11 +228,20 @@ def oauth_callback():
         print(f"OAuth error: {e}")
         return "Erreur lors de l'authentification Discord.", 502
 
-    if not _user_is_staff_or_admin(user_id):
+    access = _check_dashboard_access(user_id)
+    if access == "no_role_configured":
         session.clear()
         return (
-            "Acces refuse : tu dois etre membre du serveur et avoir le role admin "
-            "configure (ou la permission Administrateur).",
+            "⚠️ Aucun rôle admin n'est configuré sur le serveur. "
+            "Un administrateur doit d'abord lancer la commande /setup dans Discord "
+            "pour définir le rôle admin, puis tu pourras te connecter.",
+            403,
+        )
+    if access != "ok":
+        session.clear()
+        return (
+            "Accès refusé : tu dois être membre du serveur ET posséder le rôle admin "
+            "configuré dans le setup.",
             403,
         )
 
