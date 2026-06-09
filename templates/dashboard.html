@@ -1,0 +1,210 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - Discord Bot{% endblock %}
+
+{% block content %}
+<div class="dashboard-header">
+    <div class="container">
+        <h1><i class="fas fa-tachometer-alt me-3"></i>Bot Dashboard</h1>
+        <p class="mb-0">Monitor your Discord bot's performance and activity</p>
+    </div>
+</div>
+
+<!-- Stats Cards -->
+<div class="row mb-4">
+    <div class="col-md-3 mb-3">
+        <div class="card metric-card h-100">
+            <div class="card-body text-center">
+                <i class="fas fa-server fa-2x text-primary mb-3"></i>
+                <h3 id="guild-count" class="fw-bold">{{ bot_stats.guilds }}</h3>
+                <p class="text-muted mb-0">Servers</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3 mb-3">
+        <div class="card metric-card h-100">
+            <div class="card-body text-center">
+                <i class="fas fa-users fa-2x text-success mb-3"></i>
+                <h3 id="user-count" class="fw-bold">{{ bot_stats.users | default(0) | int }}</h3>
+                <p class="text-muted mb-0">Total Users</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3 mb-3">
+        <div class="card metric-card h-100">
+            <div class="card-body text-center">
+                <i class="fas fa-exclamation-triangle fa-2x text-warning mb-3"></i>
+                <h3 id="warnings-hour" class="fw-bold">{{ warnings_today }}</h3>
+                <p class="text-muted mb-0">Warnings Today</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3 mb-3">
+        <div class="card metric-card h-100">
+            <div class="card-body text-center">
+                <i class="fas fa-stopwatch fa-2x text-info mb-3"></i>
+                <h3 id="bot-latency" class="fw-bold">{{ bot_stats.latency | default(0) }}ms</h3>
+                <p class="text-muted mb-0">Bot Latency</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <!-- Recent Warnings -->
+    <div class="col-md-8 mb-4">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0"><i class="fas fa-exclamation-triangle me-2"></i>Recent Warnings</h5>
+                <a href="{{ url_for('warnings_page') }}" class="btn btn-sm btn-outline-primary">View All</a>
+            </div>
+            <div class="card-body">
+                {% if recent_warnings %}
+                    {% for warning in recent_warnings %}
+                    <div class="warning-item p-3 mb-3 rounded">
+                        <div class="d-flex justify-content-between align-items-start">
+                            <div class="flex-grow-1">
+                                <div class="d-flex align-items-center mb-2">
+                                    <!-- User Avatar -->
+                                    <div class="me-3">
+                                        {% if warning.avatar_url %}
+                                            <img src="{{ warning.avatar_url }}" alt="{{ warning.username }}" 
+                                                 class="rounded-circle" style="width: 32px; height: 32px;">
+                                        {% else %}
+                                            <div class="rounded-circle bg-secondary d-flex align-items-center justify-content-center text-white" 
+                                                 style="width: 32px; height: 32px; font-size: 14px;">
+                                                {{ warning.username[0] if warning.username else '?' }}
+                                            </div>
+                                        {% endif %}
+                                    </div>
+                                    
+                                    <!-- User Info -->
+                                    <div class="flex-grow-1">
+                                        <div class="d-flex align-items-center mb-1">
+                                            <strong class="me-2">{{ warning.display_name }}</strong>
+                                            <span class="bot-badge badge me-2 
+                                                {% if warning.bot_source == 'draftbot' %}bg-info
+                                                {% elif warning.bot_source == 'popocorp' %}bg-primary
+                                                {% else %}bg-secondary{% endif %}">
+                                                {% if warning.bot_source == 'draftbot' %}🤖 DraftBot
+                                                {% elif warning.bot_source == 'popocorp' %}🛡️ Popocorp
+                                                {% elif warning.bot_source == 'carl-bot' %}🦾 Carl-bot
+                                                {% elif warning.bot_source == 'dyno' %}⚡ Dyno
+                                                {% elif warning.bot_source == 'mee6' %}🎵 MEE6
+                                                {% else %}❓ {{ warning.bot_source | title }}{% endif %}
+                                            </span>
+                                        </div>
+                                        <div class="small text-muted mb-1">
+                                            @{{ warning.username }} • ID: {{ warning.user_id }}
+                                            {% if warning.guild_name %} • {{ warning.guild_name }}{% endif %}
+                                        </div>
+                                        <p class="mb-0">{{ warning.reason or 'Aucune raison fournie' }}</p>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="text-end">
+                                <small class="text-muted">{{ warning.timestamp.strftime('%d/%m %H:%M') }}</small>
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <div class="text-center py-4">
+                        <i class="fas fa-check-circle fa-3x text-success mb-3"></i>
+                        <p class="text-muted">No recent warnings</p>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Bot Statistics -->
+    <div class="col-md-4 mb-4">
+        <div class="card h-100">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="fas fa-chart-pie me-2"></i>Warning Sources</h5>
+            </div>
+            <div class="card-body">
+                {% if bot_warning_stats %}
+                    {% for bot_source, count in bot_warning_stats.items() %}
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <div>
+                            <span class="bot-badge badge me-2 
+                                {% if bot_source == 'draftbot' %}bg-info
+                                {% elif bot_source == 'popocorp' %}bg-primary
+                                {% else %}bg-secondary{% endif %}">
+                                {% if bot_source == 'draftbot' %}🤖 DraftBot
+                                {% elif bot_source == 'popocorp' %}🛡️ Popocorp
+                                {% elif bot_source == 'carl-bot' %}🦾 Carl-bot
+                                {% elif bot_source == 'dyno' %}⚡ Dyno
+                                {% elif bot_source == 'mee6' %}🎵 MEE6
+                                {% else %}❓ {{ bot_source | title }}{% endif %}
+                            </span>
+                        </div>
+                        <span class="badge bg-dark">{{ count }}</span>
+                    </div>
+                    <div class="progress mb-3" style="height: 6px;">
+                        <div class="progress-bar 
+                            {% if bot_source == 'draftbot' %}bg-info
+                            {% elif bot_source == 'popocorp' %}bg-primary
+                            {% else %}bg-secondary{% endif %}" 
+                            style="width: {{ (count / total_warnings * 100) if total_warnings > 0 else 0 }}%">
+                        </div>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <div class="text-center py-4">
+                        <i class="fas fa-chart-pie fa-3x text-muted mb-3"></i>
+                        <p class="text-muted">No warning data available</p>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Server Overview -->
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0"><i class="fas fa-server me-2"></i>Connected Servers</h5>
+                <a href="{{ url_for('guilds_page') }}" class="btn btn-sm btn-outline-primary">Manage</a>
+            </div>
+            <div class="card-body">
+                {% if guilds %}
+                    <div class="row">
+                        {% for guild in guilds[:6] %}
+                        <div class="col-md-4 mb-3">
+                            <div class="d-flex align-items-center">
+                                {% if guild.icon %}
+                                    <img src="{{ guild.icon }}" alt="{{ guild.name }}" class="guild-icon me-3">
+                                {% else %}
+                                    <div class="guild-icon me-3 bg-secondary d-flex align-items-center justify-content-center">
+                                        <i class="fas fa-server text-white"></i>
+                                    </div>
+                                {% endif %}
+                                <div>
+                                    <h6 class="mb-1">{{ guild.name }}</h6>
+                                    <small class="text-muted">{{ guild.member_count }} members</small>
+                                </div>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% if guilds | length > 6 %}
+                        <div class="text-center mt-3">
+                            <p class="text-muted">And {{ guilds | length - 6 }} more servers...</p>
+                        </div>
+                    {% endif %}
+                {% else %}
+                    <div class="text-center py-4">
+                        <i class="fas fa-server fa-3x text-muted mb-3"></i>
+                        <p class="text-muted">No servers connected</p>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
