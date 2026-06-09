@@ -22,6 +22,10 @@ RUN pip install uv
 # Install Python dependencies
 RUN uv sync --frozen
 
+# Make the uv-created virtual environment the default Python (so `python` sees the deps)
+ENV PATH="/app/.venv/bin:$PATH"
+ENV VIRTUAL_ENV="/app/.venv"
+
 # Copy application code
 COPY . .
 
