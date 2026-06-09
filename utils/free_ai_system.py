@@ -35,8 +35,8 @@ class FreeAISystem:
         self._gemini_resolved_model = None  # Cache of a model confirmed available for this key
 
         self.openai_api_key = os.environ.get("OPENAI_API_KEY")
-        # Initialize OpenAI client (kept as a secondary provider)
-        self.openai_client = OpenAI(api_key=self.openai_api_key)
+        # Initialize OpenAI client only if a key is present (it raises otherwise)
+        self.openai_client = OpenAI(api_key=self.openai_api_key) if self.openai_api_key else None
 
         if self.gemini_api_key:
             logging.info(f"AI brain: Google Gemini active (model: {self.gemini_model or 'auto'})")
