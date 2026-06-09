@@ -6,9 +6,11 @@ import random
 import re
 import json
 import os
+import logging
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import sys
+import requests
 from openai import OpenAI
 
 # Add current directory to path for imports
@@ -22,9 +24,26 @@ class FreeAISystem:
     """Free AI system with PopoCorps personality"""
     
     def __init__(self):
-        # Initialize OpenAI client
-        self.openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-        
+        # AI providers configuration (priority: Gemini > OpenAI > local fallback)
+        self.gemini_api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        self.gemini_model = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+        # Fallback Gemini models tried in order if the primary one is unavailable (404)
+        self.gemini_fallback_models = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-flash-latest"]
+
+        self.openai_api_key = os.environ.get("OPENAI_API_KEY")
+        # Initialize OpenAI client (kept as a secondary provider)
+        self.openai_client = OpenAI(api_key=self.openai_api_key)
+
+        if self.gemini_api_key:
+            logging.info(f"AI brain: Google Gemini active (model: {self.gemini_model})")
+        elif self.openai_api_key:
+            logging.info("AI brain: OpenAI active")
+        else:
+            logging.warning(
+                "AI brain: aucune cle IA detectee (GEMINI_API_KEY/OPENAI_API_KEY). "
+                "Le bot utilisera des reponses pre-ecrites. Ajoute GEMINI_API_KEY pour une vraie IA gratuite."
+            )
+
         self.conversation_memory = {}  # Guild -> User -> conversation history
         self.personality_state = {}   # Guild -> User -> personality state
         self.topics_discussed = {}    # Guild -> User -> topics discussed
@@ -46,6 +65,78 @@ class FreeAISystem:
             'emotion': ['triste', 'sad', 'heureux', 'happy', 'énervé', 'angry', 'fatigué', 'tired']
         }
         
+    def _generate_gemini_response(self, content: str, user_name: str, context: Dict, guild_info: Dict) -> str:
+        """Génère une réponse avec Google Gemini (API REST gratuite)."""
+        system_prompt = self._create_popocorps_system_prompt(context, guild_info)
+        conversation_history = self._build_conversation_context(
+            context.get('guild_id', 0), context.get('user_id', 0)
+        )
+
+        # Construire l'historique au format Gemini (roles: user / model)
+        contents = []
+        if conversation_history:
+            for msg in conversation_history[-6:]:
+                user_msg = msg.get('content')
+                if user_msg:
+                    contents.append({"role": "user", "parts": [{"text": user_msg}]})
+                bot_msg = msg.get('bot_response')
+                if bot_msg:
+                    contents.append({"role": "model", "parts": [{"text": bot_msg}]})
+        contents.append({"role": "user", "parts": [{"text": f"{user_name}: {content}"}]})
+
+        payload = {
+            "system_instruction": {"parts": [{"text": system_prompt}]},
+            "contents": contents,
+            "generationConfig": {
+                "temperature": 0.9,
+                "maxOutputTokens": 400,
+                "topP": 0.95,
+            },
+            "safetySettings": [
+                {"category": c, "threshold": "BLOCK_ONLY_HIGH"}
+                for c in (
+                    "HARM_CATEGORY_HARASSMENT",
+                    "HARM_CATEGORY_HATE_SPEECH",
+                    "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                    "HARM_CATEGORY_DANGEROUS_CONTENT",
+                )
+            ],
+        }
+
+        # Essaie le modèle configuré, puis les modèles de repli si 404
+        models_to_try = [self.gemini_model] + [
+            m for m in self.gemini_fallback_models if m != self.gemini_model
+        ]
+        last_error = None
+        for model in models_to_try:
+            url = (
+                f"https://generativelanguage.googleapis.com/v1beta/models/"
+                f"{model}:generateContent?key={self.gemini_api_key}"
+            )
+            try:
+                resp = requests.post(url, json=payload, timeout=20)
+                if resp.status_code == 404:
+                    last_error = f"modele {model} introuvable (404)"
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+                candidates = data.get("candidates", [])
+                if not candidates:
+                    last_error = "reponse Gemini vide (peut-etre bloquee par les filtres)"
+                    break
+                parts = candidates[0].get("content", {}).get("parts", [])
+                text = "".join(p.get("text", "") for p in parts).strip()
+                if text:
+                    return self._adapt_response_to_popocorps_personality(text, context)
+                last_error = "texte Gemini vide"
+                break
+            except Exception as e:
+                last_error = str(e)
+                continue
+
+        logging.error(f"Gemini error: {last_error}")
+        raise RuntimeError(f"Gemini indisponible: {last_error}")
+
     def _generate_openai_response(self, content: str, user_name: str, context: Dict, guild_info: Dict) -> str:
         """Génère une réponse avec OpenAI GPT-4o"""
         try:
@@ -99,22 +190,35 @@ class FreeAISystem:
         relationship_level = context.get('relationship_level', 'new')
         communication_style = context.get('communication_style', 'casual')
         
-        base_personality = """Tu es PopoCorps, un bot Discord protecteur et bienveillant avec une personnalité française décontractée. 
-        
-        PERSONNALITÉ:
-        - Tu es protecteur et tu veilles sur la sécurité du serveur
-        - Tu parles français avec un style naturel et décontracté
-        - Tu peux utiliser "putain", "bordel", "merde" de manière affectueuse (jamais comme insultes)
-        - Tu es amical mais pas trop familier avec les nouveaux utilisateurs
-        - Tu développes des relations plus proches avec les utilisateurs réguliers
-        
-        RÈGLES DE COMMUNICATION:
-        - Réponds en français sauf si on te parle dans une autre langue
-        - Garde tes réponses courtes et naturelles (1-2 phrases max)
-        - Adapte ton niveau de familiarité selon l'utilisateur
-        - Sois utile et protecteur sans être moralisateur
-        - Si quelqu'un semble en détresse, oriente vers l'aide appropriée
-        """
+        guild_name = guild_info.get('name', 'ce serveur') if guild_info else 'ce serveur'
+        member_count = guild_info.get('member_count', '?') if guild_info else '?'
+
+        base_personality = f"""Tu es PopoCorps, le bot Discord protecteur et bienveillant du serveur "{guild_name}" ({member_count} membres). Tu as une personnalité française décontractée, attachante et un brin taquine.
+
+PERSONNALITÉ:
+- Tu es le "gardien numérique" du serveur : protecteur, vigilant, mais cool
+- Tu parles français de manière naturelle, vivante et spontanée (pas robotique)
+- Tu as de l'humour, tu peux taquiner gentiment et faire des vannes
+- Tu peux employer "putain", "bordel", "merde" de façon affectueuse/expressive, JAMAIS comme insulte envers quelqu'un
+- Tu es chaleureux avec les habitués, poli et accueillant avec les nouveaux
+- Tu n'inventes jamais de fausses infos : si tu ne sais pas, tu le dis simplement
+
+TES CAPACITÉS (tu peux les expliquer si on te demande):
+- Protection anti-raid et détection de spam 24/7
+- Système d'avertissements (warnings) et modération
+- Messages de bienvenue/au revoir personnalisés
+- Système de "directives" : un admin peut créer des règles permettant à une personne autorisée de te faire donner/retirer un rôle (commandes /directive add, /directive list, /directive remove)
+- Un dashboard web de configuration
+- Pour la liste complète des commandes, oriente vers /help
+
+RÈGLES DE COMMUNICATION:
+- Réponds en français par défaut, ou dans la langue de ton interlocuteur
+- Réponses naturelles et assez courtes (2-4 phrases max), va à l'essentiel
+- Utilise des émojis avec parcimonie (🛡️, 🤖, ⚡, 🎯) sans en abuser
+- Adapte ton niveau de familiarité selon la relation avec l'utilisateur
+- Reste utile et protecteur sans être moralisateur ni donneur de leçons
+- Si quelqu'un semble en détresse (mal-être, violence...), réponds avec empathie et oriente vers de l'aide
+"""
         
         # Adapter selon le niveau de relation
         if relationship_level in ['friend', 'close']:
@@ -195,12 +299,15 @@ class FreeAISystem:
         # Nettoyer les préfixes indésirables
         if response.startswith("PopoCorps:"):
             response = response[10:].strip()
-        
-        # Éviter les réponses trop longues
-        if len(response) > 200:
-            sentences = response.split('.')
-            response = sentences[0] + '.' if len(sentences) > 1 else response[:200] + '...'
-        
+
+        # Discord limite les messages à 2000 caractères ; on garde une marge raisonnable
+        max_len = 1500
+        if len(response) > max_len:
+            truncated = response[:max_len]
+            # Couper proprement à la dernière fin de phrase si possible
+            cut = max(truncated.rfind('. '), truncated.rfind('! '), truncated.rfind('? '))
+            response = (truncated[:cut + 1] if cut > 200 else truncated).strip() + " …"
+
         return response
 
     def generate_response(self, message, guild_info: Dict, is_admin: bool = False) -> str:
@@ -225,10 +332,25 @@ class FreeAISystem:
         if is_admin and self._is_system_control_request(content):
             return self._handle_system_control_response(content)
         
-        # Generate OpenAI response
+        # Generate response with the best available AI brain
         context['guild_id'] = guild_id
         context['user_id'] = user_id
-        response = self._generate_openai_response(content, user_name, context, guild_info)
+        response = None
+
+        if self.gemini_api_key:
+            try:
+                response = self._generate_gemini_response(message.content, user_name, context, guild_info)
+            except Exception as e:
+                logging.error(f"Gemini fallback: {e}")
+
+        if response is None and self.openai_api_key:
+            try:
+                response = self._generate_openai_response(message.content, user_name, context, guild_info)
+            except Exception as e:
+                logging.error(f"OpenAI fallback: {e}")
+
+        if response is None:
+            response = self._generate_simple_fallback_response(content, user_name, context)
         
         # Store both message and response for learning
         self._store_conversation(guild_id, user_id, message.content, response)

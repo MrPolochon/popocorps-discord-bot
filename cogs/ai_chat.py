@@ -5,6 +5,7 @@ import logging
 import re
 import os
 import json
+import asyncio
 from datetime import datetime, timezone
 from utils.guild_settings import GuildSettings
 from utils.translations import get_text
@@ -32,27 +33,23 @@ class AIChatSystem(commands.Cog):
         
         # Check if AI chat is enabled for this guild
         ai_enabled = self.guild_settings.get_setting(guild_id, 'ai_chat_enabled', False)
-        logging.info(f"AI Chat check - Guild {guild_id}: enabled={ai_enabled}")
         
         if not ai_enabled:
-            logging.info(f"AI Chat disabled for guild {guild_id}, skipping")
             return
             
         # Check if message should trigger AI response
         should_respond = await self.should_respond_to_message(message)
-        logging.info(f"Should respond to '{message.content[:50]}...' from {message.author.name}: {should_respond}")
         
         if should_respond:
             try:
-                # Generate AI response
-                response = await self.generate_ai_response(message)
+                # Generate AI response (with a typing indicator for better UX)
+                async with message.channel.typing():
+                    response = await self.generate_ai_response(message)
                 
                 if response:
                     # Send response
                     await message.channel.send(response)
-                    
-                    # Log AI interaction
-                    logging.info(f"AI responded in guild {guild_id}, channel {message.channel.id}")
+                    logging.debug(f"AI responded in guild {guild_id}, channel {message.channel.id}")
                     
             except Exception as e:
                 logging.error(f"Error in AI chat system: {e}")
@@ -68,21 +65,15 @@ class AIChatSystem(commands.Cog):
         bot_mention = f"<@{self.bot.user.id}>"
         bot_mention_nick = f"<@!{self.bot.user.id}>"
         
-        logging.info(f"Checking message: '{message.content}'")
-        logging.info(f"Bot name: '{bot_name}', Bot ID: {self.bot.user.id}")
-        logging.info(f"Looking for mentions: '{bot_mention}' or '{bot_mention_nick}'")
-        
         # Respond if:
         # 1. Bot is mentioned directly
         if bot_mention in message.content or bot_mention_nick in message.content:
-            logging.info("Bot mentioned directly - should respond")
             return True
             
         # 2. Bot name is mentioned (check various forms)
         name_variants = [bot_name, 'popocorp', 'popolcorp', 'popocorps', 'popo']
         for variant in name_variants:
             if variant in content:
-                logging.info(f"Bot name variant '{variant}' found in message - should respond")
                 return True
             
         # 3. Message contains question words directed at bot specifically (must also mention bot or be very specific)
@@ -94,7 +85,6 @@ class AIChatSystem(commands.Cog):
         ]
         
         if any(phrase in content for phrase in bot_directed_questions):
-            logging.info(f"Bot-directed question found - should respond")
             return True
             
         # 4. Direct reply to bot's message
@@ -121,8 +111,12 @@ class AIChatSystem(commands.Cog):
                 'id': message.guild.id
             }
             
-            # Generate response using free AI system
-            ai_response = self.free_ai.generate_response(message, guild_info, is_admin)
+            # Generate response using the AI system, off the event loop to avoid
+            # blocking the bot during the (network) AI call
+            loop = asyncio.get_event_loop()
+            ai_response = await loop.run_in_executor(
+                None, self.free_ai.generate_response, message, guild_info, is_admin
+            )
             
             # Check for dangerous situations and alert staff if needed
             if self.free_ai.is_dangerous_situation(message.content):
