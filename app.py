@@ -1,5 +1,9 @@
 import os
-from flask import Flask, render_template, request, jsonify, session, redirect, url_for, flash
+import hmac
+import secrets as secrets_module
+from urllib.parse import urlencode
+import requests
+from flask import Flask, render_template, render_template_string, request, jsonify, session, redirect, url_for, flash
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import desc, func
@@ -13,7 +17,15 @@ from models import Warning, get_db_session, engine, DATABASE_URL
 from utils.guild_settings import GuildSettings
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("FLASK_SECRET_KEY") or "dashboard-secret-key-2024"
+app.secret_key = (
+    os.environ.get("SESSION_SECRET")
+    or os.environ.get("FLASK_SECRET_KEY")
+    or secrets_module.token_hex(32)
+)
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+)
 app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL
 app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
     "pool_recycle": 300,
@@ -32,6 +44,201 @@ discord_bot = None
 # User info cache to avoid repeated API calls
 user_cache = {}
 cache_timestamp = {}
+
+# ---------------------------------------------------------------------------
+# Authentification du dashboard
+# Exige : mot de passe correct + connexion Discord (OAuth2) + etre membre du
+# serveur avec le role admin configure (ou permission Administrateur/Gerer le serveur).
+# ---------------------------------------------------------------------------
+DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD")
+DISCORD_CLIENT_ID = os.environ.get("DISCORD_CLIENT_ID")
+DISCORD_CLIENT_SECRET = os.environ.get("DISCORD_CLIENT_SECRET")
+DISCORD_API_BASE = "https://discord.com/api"
+
+# Endpoints accessibles sans authentification
+PUBLIC_ENDPOINTS = {"login", "auth_discord", "oauth_callback", "logout", "static"}
+
+
+def _dashboard_ready():
+    """Le dashboard n'est utilisable que si l'auth est entierement configuree."""
+    return bool(DASHBOARD_PASSWORD and DISCORD_CLIENT_ID and DISCORD_CLIENT_SECRET)
+
+
+def _oauth_redirect_uri():
+    """Construit l'URL de redirection OAuth (force https, gere le proxy Railway)."""
+    base = os.environ.get("DASHBOARD_BASE_URL")
+    if base:
+        return base.rstrip("/") + "/callback"
+    host = request.headers.get("X-Forwarded-Host", request.host)
+    return f"https://{host}/callback"
+
+
+def _user_is_staff_or_admin(user_id: int):
+    """Verifie via le bot que l'utilisateur est membre d'un serveur du bot et y
+    possede le role admin configure (ou la permission Administrateur/Gerer le serveur)."""
+    if not discord_bot:
+        return False
+    for guild in discord_bot.guilds:
+        member = guild.get_member(user_id)
+        if not member:
+            continue
+        # Permissions Discord fortes
+        if member.guild_permissions.administrator or member.guild_permissions.manage_guild:
+            return True
+        # Role admin configure dans le setup
+        admin_role_id = guild_settings.get_admin_role(guild.id)
+        if admin_role_id and any(r.id == admin_role_id for r in member.roles):
+            return True
+    return False
+
+
+@app.before_request
+def _require_authentication():
+    if request.endpoint in PUBLIC_ENDPOINTS:
+        return None
+    if not _dashboard_ready():
+        return (
+            "Dashboard desactive : configure les variables DASHBOARD_PASSWORD, "
+            "DISCORD_CLIENT_ID et DISCORD_CLIENT_SECRET pour l'activer.",
+            503,
+        )
+    if session.get("authenticated"):
+        return None
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "authentication required"}), 401
+    return redirect(url_for("login", next=request.path))
+
+
+LOGIN_HTML = """
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PopoCorps · Connexion</title>
+<style>
+  body{font-family:system-ui,Segoe UI,Roboto,sans-serif;background:#0b0e14;color:#e6e6e6;
+       display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0}
+  .card{background:#151a23;padding:32px;border-radius:14px;width:320px;box-shadow:0 10px 40px rgba(0,0,0,.4)}
+  h1{font-size:20px;margin:0 0 4px}p{color:#9aa4b2;font-size:13px;margin:0 0 20px}
+  input{width:100%;box-sizing:border-box;padding:11px;border-radius:8px;border:1px solid #2a3340;
+        background:#0b0e14;color:#fff;margin-bottom:14px}
+  button{width:100%;padding:11px;border:0;border-radius:8px;background:#5865F2;color:#fff;
+         font-weight:600;cursor:pointer}
+  .err{background:#3a1b1b;color:#ff9b9b;padding:9px;border-radius:8px;font-size:13px;margin-bottom:14px}
+</style></head>
+<body><form class="card" method="post">
+  <h1>🛡️ PopoCorps</h1>
+  <p>Connexion au tableau de bord</p>
+  {% if error %}<div class="err">{{ error }}</div>{% endif %}
+  <input type="password" name="password" placeholder="Mot de passe" autofocus required>
+  <button type="submit">Continuer avec Discord</button>
+</form></body></html>
+"""
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if not _dashboard_ready():
+        return (
+            "Dashboard desactive : configure DASHBOARD_PASSWORD, DISCORD_CLIENT_ID "
+            "et DISCORD_CLIENT_SECRET.",
+            503,
+        )
+    if session.get("authenticated"):
+        return redirect(url_for("dashboard"))
+    error = None
+    if request.method == "POST":
+        password = request.form.get("password", "")
+        if hmac.compare_digest(password, DASHBOARD_PASSWORD):
+            # Mot de passe OK -> on lance la verification d'identite Discord
+            session["pw_ok"] = True
+            next_path = request.args.get("next", "")
+            if next_path.startswith("/"):
+                session["post_login_next"] = next_path
+            return redirect(url_for("auth_discord"))
+        error = "Mot de passe incorrect."
+        return render_template_string(LOGIN_HTML, error=error), 401
+    return render_template_string(LOGIN_HTML, error=error)
+
+
+@app.route("/auth/discord")
+def auth_discord():
+    if not _dashboard_ready() or not session.get("pw_ok"):
+        return redirect(url_for("login"))
+    state = secrets_module.token_urlsafe(24)
+    session["oauth_state"] = state
+    params = {
+        "client_id": DISCORD_CLIENT_ID,
+        "redirect_uri": _oauth_redirect_uri(),
+        "response_type": "code",
+        "scope": "identify",
+        "state": state,
+        "prompt": "consent",
+    }
+    return redirect(f"{DISCORD_API_BASE}/oauth2/authorize?{urlencode(params)}")
+
+
+@app.route("/callback")
+def oauth_callback():
+    if not _dashboard_ready() or not session.get("pw_ok"):
+        return redirect(url_for("login"))
+    # Verif CSRF
+    if not request.args.get("state") or request.args.get("state") != session.get("oauth_state"):
+        return "Etat OAuth invalide. Reessaie de te connecter.", 400
+    code = request.args.get("code")
+    if not code:
+        return redirect(url_for("login"))
+    try:
+        token_resp = requests.post(
+            f"{DISCORD_API_BASE}/oauth2/token",
+            data={
+                "client_id": DISCORD_CLIENT_ID,
+                "client_secret": DISCORD_CLIENT_SECRET,
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": _oauth_redirect_uri(),
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=15,
+        )
+        token_resp.raise_for_status()
+        access_token = token_resp.json().get("access_token")
+        if not access_token:
+            return "Echec de l'authentification Discord.", 401
+        me = requests.get(
+            f"{DISCORD_API_BASE}/users/@me",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=15,
+        )
+        me.raise_for_status()
+        user = me.json()
+        user_id = int(user["id"])
+    except Exception as e:
+        print(f"OAuth error: {e}")
+        return "Erreur lors de l'authentification Discord.", 502
+
+    if not _user_is_staff_or_admin(user_id):
+        session.clear()
+        return (
+            "Acces refuse : tu dois etre membre du serveur et avoir le role admin "
+            "configure (ou la permission Administrateur).",
+            403,
+        )
+
+    # Authentifie
+    session.pop("pw_ok", None)
+    session.pop("oauth_state", None)
+    session["authenticated"] = True
+    session["discord_user_id"] = user_id
+    session["discord_username"] = user.get("username")
+    next_path = session.pop("post_login_next", None)
+    return redirect(next_path if next_path else url_for("dashboard"))
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
 
 def set_discord_bot(bot):
     """Set the Discord bot reference for the dashboard"""
