@@ -23,6 +23,24 @@ class Warning(Base):
     def __repr__(self):
         return f"<Warning(user_id={self.user_id}, reason='{self.reason}', bot_source='{self.bot_source}')>"
 
+class Directive(Base):
+    """Admin-defined rule: an authorized user/role can make the bot run an action
+    (give/remove a role on a mentioned member) by using a trigger keyword."""
+    __tablename__ = 'directives'
+
+    id = Column(Integer, primary_key=True)
+    guild_id = Column(BigInteger, nullable=False)      # Discord guild ID
+    trigger = Column(String(200), nullable=False)      # Keyword that triggers the action (e.g. "whitelist")
+    action = Column(String(20), nullable=False)        # 'give_role' or 'remove_role'
+    role_id = Column(BigInteger, nullable=False)       # Role to give/remove
+    authorized_type = Column(String(10), nullable=False)  # 'user' or 'role'
+    authorized_id = Column(BigInteger, nullable=False)    # User ID or Role ID allowed to trigger
+    created_by = Column(BigInteger, nullable=True)     # Admin who created the directive
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<Directive(guild_id={self.guild_id}, trigger='{self.trigger}', action='{self.action}', role_id={self.role_id})>"
+
 # Database setup
 DATABASE_URL = os.environ.get('DATABASE_URL')
 if not DATABASE_URL:

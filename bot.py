@@ -184,5 +184,11 @@ async def load_extensions():
         logging.info("Loaded ai_chat cog - PopoCorps AI personality system with free AI responses")
     except Exception as e:
         logging.error(f"Failed to load AI chat extension: {e}")
+
+    try:
+        await bot.load_extension('cogs.directive_system')
+        logging.info("Loaded directive_system cog - admin-defined role directives")
+    except Exception as e:
+        logging.error(f"Failed to load directive system extension: {e}")
     
 
