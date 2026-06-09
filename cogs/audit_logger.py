@@ -6,14 +6,240 @@ from utils.guild_settings import guild_settings
 from utils.translations import get_text, create_embed
 import asyncio
 
+# Labels FR pour les entrees du journal d'audit Discord
+AUDIT_ACTION_LABELS = {
+    discord.AuditLogAction.guild_update: "Serveur modifie",
+    discord.AuditLogAction.channel_create: "Salon cree",
+    discord.AuditLogAction.channel_update: "Salon modifie",
+    discord.AuditLogAction.channel_delete: "Salon supprime",
+    discord.AuditLogAction.overwrite_create: "Permission salon ajoutee",
+    discord.AuditLogAction.overwrite_update: "Permission salon modifiee",
+    discord.AuditLogAction.overwrite_delete: "Permission salon supprimee",
+    discord.AuditLogAction.kick: "Expulsion",
+    discord.AuditLogAction.member_prune: "Purge de membres",
+    discord.AuditLogAction.ban: "Bannissement",
+    discord.AuditLogAction.unban: "Deban",
+    discord.AuditLogAction.member_update: "Membre modifie",
+    discord.AuditLogAction.member_role_update: "Roles membre modifies",
+    discord.AuditLogAction.member_move: "Membre deplace (vocal)",
+    discord.AuditLogAction.member_disconnect: "Membre deconnecte (vocal)",
+    discord.AuditLogAction.bot_add: "Bot ajoute",
+    discord.AuditLogAction.role_create: "Role cree",
+    discord.AuditLogAction.role_update: "Role modifie",
+    discord.AuditLogAction.role_delete: "Role supprime",
+    discord.AuditLogAction.invite_create: "Invitation creee",
+    discord.AuditLogAction.invite_update: "Invitation modifiee",
+    discord.AuditLogAction.invite_delete: "Invitation supprimee",
+    discord.AuditLogAction.webhook_create: "Webhook cree",
+    discord.AuditLogAction.webhook_update: "Webhook modifie",
+    discord.AuditLogAction.webhook_delete: "Webhook supprime",
+    discord.AuditLogAction.emoji_create: "Emoji cree",
+    discord.AuditLogAction.emoji_update: "Emoji modifie",
+    discord.AuditLogAction.emoji_delete: "Emoji supprime",
+    discord.AuditLogAction.message_delete: "Message supprime (mod)",
+    discord.AuditLogAction.message_bulk_delete: "Suppression en masse",
+    discord.AuditLogAction.message_pin: "Message epingle",
+    discord.AuditLogAction.message_unpin: "Message desepingle",
+    discord.AuditLogAction.integration_create: "Integration creee",
+    discord.AuditLogAction.integration_update: "Integration modifiee",
+    discord.AuditLogAction.integration_delete: "Integration supprimee",
+    discord.AuditLogAction.stage_instance_create: "Stage cree",
+    discord.AuditLogAction.stage_instance_update: "Stage modifie",
+    discord.AuditLogAction.stage_instance_delete: "Stage supprime",
+    discord.AuditLogAction.sticker_create: "Sticker cree",
+    discord.AuditLogAction.sticker_update: "Sticker modifie",
+    discord.AuditLogAction.sticker_delete: "Sticker supprime",
+    discord.AuditLogAction.thread_create: "Fil cree",
+    discord.AuditLogAction.thread_update: "Fil modifie",
+    discord.AuditLogAction.thread_delete: "Fil supprime",
+    discord.AuditLogAction.auto_moderation_rule_create: "Regle auto-mod creee",
+    discord.AuditLogAction.auto_moderation_rule_update: "Regle auto-mod modifiee",
+    discord.AuditLogAction.auto_moderation_rule_delete: "Regle auto-mod supprimee",
+    discord.AuditLogAction.auto_moderation_block_message: "Message bloque (auto-mod)",
+    discord.AuditLogAction.auto_moderation_flag_to_channel: "Message signale (auto-mod)",
+    discord.AuditLogAction.auto_moderation_user_communication_disabled: "Communication desactivee (auto-mod)",
+    discord.AuditLogAction.creator_monetization_request_created: "Monetisation demandee",
+    discord.AuditLogAction.creator_monetization_terms_accepted: "Conditions monetisation acceptees",
+    discord.AuditLogAction.onboarding_prompt_create: "Prompt onboarding cree",
+    discord.AuditLogAction.onboarding_prompt_update: "Prompt onboarding modifie",
+    discord.AuditLogAction.onboarding_prompt_delete: "Prompt onboarding supprime",
+    discord.AuditLogAction.onboarding_create: "Onboarding cree",
+    discord.AuditLogAction.onboarding_update: "Onboarding modifie",
+    discord.AuditLogAction.onboarding_delete: "Onboarding supprime",
+    discord.AuditLogAction.home_settings_create: "Parametres accueil crees",
+    discord.AuditLogAction.home_settings_update: "Parametres accueil modifies",
+}
+
+# Actions deja couvertes par un listener dedie (evite les doubles logs)
+_AUDIT_SKIP_DUPLICATES = {
+    discord.AuditLogAction.message_delete,
+    discord.AuditLogAction.message_bulk_delete,
+    discord.AuditLogAction.channel_create,
+    discord.AuditLogAction.channel_update,
+    discord.AuditLogAction.channel_delete,
+    discord.AuditLogAction.overwrite_create,
+    discord.AuditLogAction.overwrite_update,
+    discord.AuditLogAction.overwrite_delete,
+    discord.AuditLogAction.role_create,
+    discord.AuditLogAction.role_update,
+    discord.AuditLogAction.role_delete,
+    discord.AuditLogAction.kick,
+    discord.AuditLogAction.ban,
+    discord.AuditLogAction.unban,
+    discord.AuditLogAction.member_update,
+    discord.AuditLogAction.member_role_update,
+    discord.AuditLogAction.invite_create,
+    discord.AuditLogAction.invite_delete,
+    discord.AuditLogAction.emoji_create,
+    discord.AuditLogAction.emoji_update,
+    discord.AuditLogAction.emoji_delete,
+    discord.AuditLogAction.sticker_create,
+    discord.AuditLogAction.sticker_update,
+    discord.AuditLogAction.sticker_delete,
+    discord.AuditLogAction.thread_create,
+    discord.AuditLogAction.thread_update,
+    discord.AuditLogAction.thread_delete,
+    discord.AuditLogAction.guild_update,
+    discord.AuditLogAction.bot_add,
+    discord.AuditLogAction.member_move,
+    discord.AuditLogAction.member_disconnect,
+}
+
 class AuditLogger(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.guild_settings = guild_settings
 
+    def _logging_enabled(self, guild_id: int) -> bool:
+        return self.guild_settings.get_setting(guild_id, "audit_logs_enabled", True)
+
+    def _chunk_text(self, text: str, size: int = 1000) -> list[str]:
+        if not text:
+            return []
+        return [text[i : i + size] for i in range(0, len(text), size)]
+
+    def _add_text_fields(self, embed: discord.Embed, label: str, text: str):
+        chunks = self._chunk_text(text)
+        if not chunks:
+            embed.add_field(name=label, value="*Vide*", inline=False)
+            return
+        for i, chunk in enumerate(chunks):
+            name = label if len(chunks) == 1 else f"{label} ({i + 1}/{len(chunks)})"
+            embed.add_field(name=name, value=f"```{chunk}```", inline=False)
+
+    def _embed_deleted_message(
+        self,
+        message: discord.Message,
+        *,
+        title: str = "🗑️ Message supprimé",
+        deleted_by: discord.User | None = None,
+    ) -> discord.Embed:
+        """Construit un embed complet pour un message supprime."""
+        embed = discord.Embed(
+            title=title,
+            color=discord.Color.red(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        author = message.author
+        embed.add_field(
+            name="Auteur",
+            value=f"{author.mention} (`{author.id}`)",
+            inline=True,
+        )
+        embed.add_field(name="Salon", value=message.channel.mention, inline=True)
+        embed.add_field(
+            name="Envoyé le",
+            value=discord.utils.format_dt(message.created_at, "F") if message.created_at else "?",
+            inline=True,
+        )
+        if deleted_by:
+            embed.add_field(
+                name="Supprimé par",
+                value=f"{deleted_by.mention} (`{deleted_by.id}`)",
+                inline=True,
+            )
+        else:
+            embed.add_field(name="Supprimé par", value="Auteur ou inconnu", inline=True)
+        embed.add_field(name="ID message", value=f"`{message.id}`", inline=True)
+
+        if message.content:
+            self._add_text_fields(embed, "Texte", message.content)
+        else:
+            embed.add_field(name="Texte", value="*Aucun texte*", inline=False)
+
+        if message.attachments:
+            lines = []
+            preview_url = None
+            for att in message.attachments:
+                mb = round(att.size / (1024 * 1024), 2)
+                lines.append(f"**{att.filename}** ({mb} Mo)\n{att.url}")
+                if not preview_url and att.content_type and att.content_type.startswith("image/"):
+                    preview_url = att.url
+            embed.add_field(name="Fichiers / images", value="\n\n".join(lines)[:1024], inline=False)
+            if preview_url:
+                embed.set_image(url=preview_url)
+
+        if message.stickers:
+            sticker_lines = []
+            for s in message.stickers:
+                line = f"**{s.name}**"
+                if getattr(s, "url", None):
+                    line += f"\n{s.url}"
+                sticker_lines.append(line)
+            embed.add_field(name="Stickers", value="\n".join(sticker_lines), inline=False)
+
+        if message.embeds:
+            for i, msg_embed in enumerate(message.embeds[:3]):
+                parts = []
+                if msg_embed.title:
+                    parts.append(f"**Titre:** {msg_embed.title}")
+                if msg_embed.description:
+                    parts.append(msg_embed.description[:500])
+                if msg_embed.url:
+                    parts.append(f"**URL:** {msg_embed.url}")
+                if msg_embed.image and msg_embed.image.url:
+                    parts.append(f"**Image:** {msg_embed.image.url}")
+                    if not embed.image:
+                        embed.set_image(url=msg_embed.image.url)
+                if msg_embed.thumbnail and msg_embed.thumbnail.url:
+                    parts.append(f"**Miniature:** {msg_embed.thumbnail.url}")
+                if msg_embed.video and msg_embed.video.url:
+                    parts.append(f"**Video:** {msg_embed.video.url}")
+                if parts:
+                    label = "Embed" if len(message.embeds) == 1 else f"Embed {i + 1}"
+                    embed.add_field(name=label, value="\n".join(parts)[:1024], inline=False)
+
+        if message.reactions:
+            react = " • ".join(f"{r.emoji} ({r.count})" for r in message.reactions)
+            embed.add_field(name="Réactions", value=react, inline=False)
+
+        embed.set_thumbnail(url=author.display_avatar.url)
+        embed.set_footer(text=f"Logs • {message.guild.name}")
+        return embed
+
+    async def _find_message_delete_actor(
+        self, guild: discord.Guild, message: discord.Message
+    ) -> discord.User | None:
+        try:
+            async for entry in guild.audit_logs(
+                action=discord.AuditLogAction.message_delete, limit=5
+            ):
+                if (datetime.now(timezone.utc) - entry.created_at).total_seconds() > 10:
+                    break
+                extra = entry.extra
+                if extra and getattr(extra, "channel", None):
+                    if extra.channel.id != message.channel.id:
+                        continue
+                if entry.target and entry.target.id == message.author.id:
+                    return entry.user
+        except Exception:
+            pass
+        return None
+
     async def send_log(self, guild, embed, critical=False, alert_reason=None):
         """Send log message to the configured log channel"""
-        # Reload guild settings to ensure we have the latest configuration
+        if not guild or not self._logging_enabled(guild.id):
+            return
         self.guild_settings.reload_guild_settings(guild.id)
         log_channel_id = self.guild_settings.get_log_channel(guild.id)
         if log_channel_id:
@@ -130,74 +356,14 @@ class AuditLogger(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message_delete(self, message):
-        """Log when messages are deleted with full content"""
+        """Log les messages supprimes avec contenu complet."""
         if message.author.bot or not message.guild:
             return
+        if not self._logging_enabled(message.guild.id):
+            return
 
-        # Get who deleted the message from audit logs
-        deleted_by = None
-        try:
-            async for entry in message.guild.audit_logs(action=discord.AuditLogAction.message_delete, limit=3):
-                if (datetime.now(timezone.utc) - entry.created_at).total_seconds() < 5:
-                    deleted_by = entry.user
-                    break
-        except:
-            pass
-
-        embed = discord.Embed(
-            title="🗑️ Message Supprimé",
-            color=discord.Color.red(),
-            timestamp=datetime.now(timezone.utc)
-        )
-        
-        embed.add_field(name="👤 Auteur", value=f"{message.author.mention} ({message.author.display_name})", inline=True)
-        embed.add_field(name="📍 Salon", value=message.channel.mention, inline=True)
-        embed.add_field(name="🕐 Envoyé le", value=discord.utils.format_dt(message.created_at, "F"), inline=True)
-        
-        if deleted_by:
-            embed.add_field(name="🔨 Supprimé par", value=f"{deleted_by.mention} ({deleted_by.display_name})", inline=True)
-        else:
-            embed.add_field(name="🔨 Supprimé par", value="Auteur du message ou inconnu", inline=True)
-            
-        embed.add_field(name="🆔 ID Message", value=f"`{message.id}`", inline=True)
-        
-        # Show full message content
-        if message.content:
-            # Split long messages into multiple fields if needed
-            content = message.content
-            if len(content) > 1024:
-                # Split into chunks of 1000 characters
-                chunks = [content[i:i+1000] for i in range(0, len(content), 1000)]
-                for i, chunk in enumerate(chunks):
-                    field_name = f"📝 Contenu du Message (Partie {i+1}/{len(chunks)})"
-                    embed.add_field(name=field_name, value=f"```{chunk}```", inline=False)
-            else:
-                embed.add_field(name="📝 Contenu du Message", value=f"```{content}```", inline=False)
-        else:
-            embed.add_field(name="📝 Contenu", value="*Message vide ou média uniquement*", inline=False)
-        
-        # Show attachments with details
-        if message.attachments:
-            attachment_info = []
-            for att in message.attachments:
-                size_mb = round(att.size / (1024 * 1024), 2)
-                attachment_info.append(f"**{att.filename}** ({size_mb} MB)")
-            embed.add_field(name="📎 Fichiers Joints", value='\n'.join(attachment_info), inline=False)
-        
-        # Show embeds if any
-        if message.embeds:
-            embed.add_field(name="🎨 Embeds", value=f"{len(message.embeds)} embed(s) dans le message", inline=False)
-        
-        # Show reactions if any
-        if message.reactions:
-            reactions = []
-            for reaction in message.reactions:
-                reactions.append(f"{reaction.emoji} ({reaction.count})")
-            embed.add_field(name="😀 Réactions", value=' • '.join(reactions), inline=False)
-
-        embed.set_thumbnail(url=message.author.display_avatar.url)
-        embed.set_footer(text=f"Audit • {message.guild.name} • ID Auteur: {message.author.id}")
-
+        deleted_by = await self._find_message_delete_actor(message.guild, message)
+        embed = self._embed_deleted_message(message, deleted_by=deleted_by)
         await self.send_log(message.guild, embed)
 
     @commands.Cog.listener()
@@ -312,6 +478,27 @@ class AuditLogger(commands.Cog):
         
         if hasattr(before, 'slowmode_delay') and before.slowmode_delay != after.slowmode_delay:
             changes.append(f"**Slowmode:** `{before.slowmode_delay}s` → `{after.slowmode_delay}s`")
+
+        if hasattr(before, 'nsfw') and before.nsfw != after.nsfw:
+            changes.append(f"**NSFW:** `{before.nsfw}` → `{after.nsfw}`")
+
+        if hasattr(before, 'overwrites') and before.overwrites != after.overwrites:
+            all_targets = set(before.overwrites.keys()) | set(after.overwrites.keys())
+            for target in all_targets:
+                b = before.overwrites.get(target, discord.PermissionOverwrite())
+                a = after.overwrites.get(target, discord.PermissionOverwrite())
+                perm_changes = []
+                for perm in (
+                    "view_channel", "send_messages", "manage_messages",
+                    "connect", "speak", "manage_channels", "manage_roles",
+                ):
+                    bv = getattr(b, perm, None)
+                    av = getattr(a, perm, None)
+                    if bv != av:
+                        perm_changes.append(f"{perm}: `{bv}`→`{av}`")
+                if perm_changes:
+                    tname = target.mention if hasattr(target, "mention") else str(target)
+                    changes.append(f"**Permissions {tname}:** " + ", ".join(perm_changes))
 
         # Check for critical permission changes, but only alert if not done by admin
         if self.is_critical_channel_change(before, after):
@@ -581,6 +768,14 @@ class AuditLogger(commands.Cog):
             before_nick = before.nick or "None"
             after_nick = after.nick or "None"
             changes.append(f"**Nickname:** `{before_nick}` → `{after_nick}`")
+
+        if getattr(before, "timed_out_until", None) != getattr(after, "timed_out_until", None):
+            b = before.timed_out_until
+            a = after.timed_out_until
+            if a:
+                changes.append(f"**Timeout jusqu'a:** {discord.utils.format_dt(a, 'F')}")
+            else:
+                changes.append("**Timeout leve**")
         
         # Check role changes
         before_roles = set(before.roles)
@@ -658,6 +853,11 @@ class AuditLogger(commands.Cog):
         
         if before.explicit_content_filter != after.explicit_content_filter:
             changes.append(f"**Content Filter:** `{before.explicit_content_filter}` → `{after.explicit_content_filter}`")
+
+        if before.invites_disabled != after.invites_disabled:
+            changes.append(
+                f"**Invitations:** `{'pausees' if after.invites_disabled else 'actives'}`"
+            )
 
         if not changes:
             return
@@ -743,6 +943,291 @@ class AuditLogger(commands.Cog):
         alert_reason = f"SPAM ATTACK DETECTED: {len(spammer_ids)} potential spammers identified during raid mode scanning. This indicates a coordinated attack against your server. Immediate moderation action is recommended to prevent further damage."
         
         await self.send_log(guild, embed, critical=True, alert_reason=alert_reason)
+
+    # ------------------------------------------------------------------
+    # Evenements complementaires (sans doublons avec les listeners ci-dessus)
+    # ------------------------------------------------------------------
+
+    @commands.Cog.listener()
+    async def on_bulk_message_delete(self, messages: list[discord.Message]):
+        """Log suppressions en masse — un resume + detail par message."""
+        if not messages:
+            return
+        guild = messages[0].guild
+        if not guild or not self._logging_enabled(guild.id):
+            return
+
+        actor = None
+        try:
+            async for entry in guild.audit_logs(
+                action=discord.AuditLogAction.message_bulk_delete, limit=1
+            ):
+                if (datetime.now(timezone.utc) - entry.created_at).total_seconds() < 10:
+                    actor = entry.user
+                    break
+        except Exception:
+            pass
+
+        header = discord.Embed(
+            title="🗑️ Suppression en masse",
+            description=f"**{len(messages)}** messages supprimés",
+            color=discord.Color.dark_red(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        if actor:
+            header.add_field(name="Par", value=f"{actor.mention} (`{actor.id}`)", inline=True)
+        channels = {m.channel.mention for m in messages if m.channel}
+        header.add_field(name="Salons", value=", ".join(channels) or "?", inline=True)
+        await self.send_log(guild, header)
+
+        for msg in messages[:8]:
+            if msg.author.bot:
+                continue
+            embed = self._embed_deleted_message(
+                msg,
+                title="🗑️ Message supprimé (purge)",
+                deleted_by=actor,
+            )
+            await self.send_log(guild, embed)
+
+        if len(messages) > 8:
+            extra = discord.Embed(
+                title="🗑️ Suppression en masse (suite)",
+                description=f"… et **{len(messages) - 8}** autres messages non détaillés ici.",
+                color=discord.Color.dark_red(),
+            )
+            await self.send_log(guild, extra)
+
+    @commands.Cog.listener()
+    async def on_member_unban(self, guild: discord.Guild, user: discord.User):
+        if not self._logging_enabled(guild.id):
+            return
+        embed = discord.Embed(
+            title="🔓 Membre débanni",
+            color=discord.Color.green(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(name="Utilisateur", value=f"{user.mention} (`{user.id}`)", inline=True)
+        await self.send_log(guild, embed)
+
+    @commands.Cog.listener()
+    async def on_voice_state_update(
+        self,
+        member: discord.Member,
+        before: discord.VoiceState,
+        after: discord.VoiceState,
+    ):
+        """Uniquement entree/sortie de salon vocal (pas mute/cam)."""
+        if member.bot or not self._logging_enabled(member.guild.id):
+            return
+        if before.channel == after.channel:
+            return
+
+        b = before.channel.mention if before.channel else "*Aucun*"
+        a = after.channel.mention if after.channel else "*Aucun*"
+        embed = discord.Embed(
+            title="🔊 Vocal",
+            color=discord.Color.teal(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(name="Membre", value=member.mention, inline=True)
+        embed.add_field(name="Déplacement", value=f"{b} → {a}", inline=False)
+        await self.send_log(member.guild, embed)
+
+    @commands.Cog.listener()
+    async def on_thread_create(self, thread: discord.Thread):
+        if not self._logging_enabled(thread.guild.id):
+            return
+        embed = discord.Embed(
+            title="🧵 Fil cree",
+            color=discord.Color.green(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(name="Fil", value=thread.mention, inline=True)
+        embed.add_field(name="Parent", value=thread.parent.mention if thread.parent else "?", inline=True)
+        embed.add_field(name="Auteur", value=str(thread.owner) if thread.owner else "?", inline=True)
+        await self.send_log(thread.guild, embed)
+
+    @commands.Cog.listener()
+    async def on_thread_delete(self, thread: discord.Thread):
+        if not self._logging_enabled(thread.guild.id):
+            return
+        embed = discord.Embed(
+            title="🗑️ Fil supprime",
+            color=discord.Color.red(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(name="Fil", value=thread.name, inline=True)
+        embed.add_field(name="ID", value=str(thread.id), inline=True)
+        await self.send_log(thread.guild, embed)
+
+    @commands.Cog.listener()
+    async def on_thread_update(self, before: discord.Thread, after: discord.Thread):
+        if not self._logging_enabled(after.guild.id):
+            return
+        changes = []
+        if before.name != after.name:
+            changes.append(f"Nom : `{before.name}` → `{after.name}`")
+        if before.archived != after.archived:
+            changes.append(f"Archive : `{before.archived}` → `{after.archived}`")
+        if before.locked != after.locked:
+            changes.append(f"Verrouille : `{before.locked}` → `{after.locked}`")
+        if before.invitable != after.invitable:
+            changes.append(f"Invitable : `{before.invitable}` → `{after.invitable}`")
+        if not changes:
+            return
+        embed = discord.Embed(
+            title="✏️ Fil modifie",
+            color=discord.Color.blue(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(name="Fil", value=after.mention, inline=True)
+        embed.add_field(name="Changements", value="\n".join(changes), inline=False)
+        await self.send_log(after.guild, embed)
+
+    @commands.Cog.listener()
+    async def on_reaction_clear(self, message: discord.Message):
+        if not message.guild or not self._logging_enabled(message.guild.id):
+            return
+        embed = discord.Embed(
+            title="🧹 Reactions effacees",
+            color=discord.Color.orange(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(name="Salon", value=message.channel.mention, inline=True)
+        embed.add_field(name="Message ID", value=f"`{message.id}`", inline=True)
+        await self.send_log(message.guild, embed)
+
+    @commands.Cog.listener()
+    async def on_guild_emojis_update(
+        self,
+        guild: discord.Guild,
+        before: list[discord.Emoji],
+        after: list[discord.Emoji],
+    ):
+        if not self._logging_enabled(guild.id):
+            return
+        before_ids = {e.id for e in before}
+        after_ids = {e.id for e in after}
+        added = [e for e in after if e.id not in before_ids]
+        removed = [e for e in before if e.id not in after_ids]
+        if not added and not removed:
+            return
+        embed = discord.Embed(
+            title="😀 Emojis mis a jour",
+            color=discord.Color.blue(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        if added:
+            embed.add_field(name="Ajoutes", value=", ".join(str(e) for e in added), inline=False)
+        if removed:
+            embed.add_field(name="Supprimes", value=", ".join(e.name for e in removed), inline=False)
+        await self.send_log(guild, embed)
+
+    @commands.Cog.listener()
+    async def on_guild_stickers_update(
+        self,
+        guild: discord.Guild,
+        before: list[discord.GuildSticker],
+        after: list[discord.GuildSticker],
+    ):
+        if not self._logging_enabled(guild.id):
+            return
+        before_ids = {s.id for s in before}
+        after_ids = {s.id for s in after}
+        added = [s for s in after if s.id not in before_ids]
+        removed = [s for s in before if s.id not in after_ids]
+        if not added and not removed:
+            return
+        embed = discord.Embed(
+            title="🏷️ Stickers mis a jour",
+            color=discord.Color.blue(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        if added:
+            embed.add_field(name="Ajoutes", value=", ".join(s.name for s in added), inline=False)
+        if removed:
+            embed.add_field(name="Supprimes", value=", ".join(s.name for s in removed), inline=False)
+        await self.send_log(guild, embed)
+
+    @commands.Cog.listener()
+    async def on_user_update(self, before: discord.User, after: discord.User):
+        """Changements globaux (pseudo, avatar) — log dans chaque serveur commun."""
+        changes = []
+        if before.name != after.name:
+            changes.append(f"Username : `{before.name}` → `{after.name}`")
+        if before.global_name != after.global_name:
+            changes.append(
+                f"Nom affiche : `{before.global_name or 'Aucun'}` → `{after.global_name or 'Aucun'}`"
+            )
+        if before.avatar != after.avatar:
+            changes.append("Avatar modifie")
+        if not changes:
+            return
+
+        for guild in self.bot.guilds:
+            member = guild.get_member(after.id)
+            if not member or not self._logging_enabled(guild.id):
+                continue
+            embed = discord.Embed(
+                title="👤 Profil utilisateur modifie",
+                color=discord.Color.blue(),
+                timestamp=datetime.now(timezone.utc),
+            )
+            embed.add_field(name="Utilisateur", value=after.mention, inline=True)
+            embed.add_field(name="Changements", value="\n".join(changes), inline=False)
+            await self.send_log(guild, embed)
+
+    @commands.Cog.listener()
+    async def on_audit_log_entry_create(self, entry: discord.AuditLogEntry):
+        """Actions audit non couvertes par les listeners dedies (webhooks, auto-mod, etc.)."""
+        guild = entry.guild
+        if not guild or not self._logging_enabled(guild.id):
+            return
+        if entry.action in _AUDIT_SKIP_DUPLICATES:
+            return
+
+        action_label = AUDIT_ACTION_LABELS.get(
+            entry.action, str(entry.action).replace("_", " ").title()
+        )
+        embed = discord.Embed(
+            title=f"📜 Audit Discord — {action_label}",
+            color=discord.Color.dark_embed(),
+            timestamp=entry.created_at or datetime.now(timezone.utc),
+        )
+        if entry.user:
+            embed.add_field(
+                name="Auteur",
+                value=f"{entry.user.mention} (`{entry.user.id}`)",
+                inline=True,
+            )
+        if entry.target:
+            target_str = str(entry.target)
+            if hasattr(entry.target, "id"):
+                target_str += f" (`{entry.target.id}`)"
+            embed.add_field(name="Cible", value=target_str[:1024], inline=True)
+        if entry.reason:
+            embed.add_field(name="Raison", value=entry.reason[:1024], inline=False)
+
+        if entry.changes:
+            change_lines = []
+            for name in dir(entry.changes.before):
+                if name.startswith("_"):
+                    continue
+                old = getattr(entry.changes.before, name, None)
+                new = getattr(entry.changes.after, name, None)
+                if old == new or callable(old):
+                    continue
+                change_lines.append(f"**{name}** : `{old}` → `{new}`")
+            if change_lines:
+                embed.add_field(
+                    name="Modifications",
+                    value="\n".join(change_lines[:15])[:1024],
+                    inline=False,
+                )
+
+        await self.send_log(guild, embed)
+
 
 async def setup(bot):
     await bot.add_cog(AuditLogger(bot))
