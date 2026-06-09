@@ -2,7 +2,7 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 from utils.guild_settings import GuildSettings
-from datetime import datetime
+from datetime import datetime, timezone
 import asyncio
 
 class SetupView(discord.ui.View):
