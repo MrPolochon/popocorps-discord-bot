@@ -9,12 +9,12 @@ from discord.ext import commands
 import asyncio
 import threading
 import json
-from models import Warning, get_db_session, engine
+from models import Warning, get_db_session, engine, DATABASE_URL
 from utils.guild_settings import GuildSettings
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY") or "dashboard-secret-key-2024"
-app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get("DATABASE_URL")
+app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL
 app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
     "pool_recycle": 300,
     "pool_pre_ping": True,

@@ -31,9 +31,5 @@ RUN mkdir -p raid_data guild_settings temp_images
 # Expose port for web dashboard
 EXPOSE 5000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:5000/ || exit 1
-
 # Start the application
 CMD ["python", "run.py"]

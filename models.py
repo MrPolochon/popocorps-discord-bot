@@ -1,4 +1,5 @@
 import os
+import logging
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, BigInteger
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -25,17 +26,33 @@ class Warning(Base):
 # Database setup
 DATABASE_URL = os.environ.get('DATABASE_URL')
 if not DATABASE_URL:
-    raise ValueError("DATABASE_URL environment variable is required")
+    logging.warning(
+        "DATABASE_URL non defini - repli sur une base SQLite locale "
+        "(les donnees ne seront pas persistantes sur un hebergeur ephemere comme Railway). "
+        "Ajoutez une base PostgreSQL et la variable DATABASE_URL pour une persistance complete."
+    )
+    DATABASE_URL = "sqlite:///popocorps.db"
 
-# Create engine with connection pooling and retry settings
-engine = create_engine(
-    DATABASE_URL,
-    pool_pre_ping=True,  # Verify connections before use
-    pool_recycle=300,    # Recycle connections every 5 minutes
-    pool_timeout=20,     # Timeout for getting connection from pool
-    max_overflow=10,     # Allow up to 10 additional connections
-    echo=False           # Set to True for SQL debugging
-)
+# Some providers expose 'postgres://' which SQLAlchemy 2.x no longer accepts
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+# Create engine (pooling options only apply to real network databases like PostgreSQL)
+if DATABASE_URL.startswith("sqlite"):
+    engine = create_engine(
+        DATABASE_URL,
+        connect_args={"check_same_thread": False},
+        echo=False,
+    )
+else:
+    engine = create_engine(
+        DATABASE_URL,
+        pool_pre_ping=True,  # Verify connections before use
+        pool_recycle=300,    # Recycle connections every 5 minutes
+        pool_timeout=20,     # Timeout for getting connection from pool
+        max_overflow=10,     # Allow up to 10 additional connections
+        echo=False           # Set to True for SQL debugging
+    )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
