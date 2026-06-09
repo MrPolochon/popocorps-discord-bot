@@ -26,16 +26,20 @@ class FreeAISystem:
     def __init__(self):
         # AI providers configuration (priority: Gemini > OpenAI > local fallback)
         self.gemini_api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-        self.gemini_model = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
-        # Fallback Gemini models tried in order if the primary one is unavailable (404)
-        self.gemini_fallback_models = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-flash-latest"]
+        self.gemini_model = os.environ.get("GEMINI_MODEL")  # Optional manual override
+        # Fallback Gemini models tried in order if discovery fails
+        self.gemini_fallback_models = [
+            "gemini-2.0-flash", "gemini-2.5-flash", "gemini-1.5-flash",
+            "gemini-2.0-flash-001", "gemini-flash-latest",
+        ]
+        self._gemini_resolved_model = None  # Cache of a model confirmed available for this key
 
         self.openai_api_key = os.environ.get("OPENAI_API_KEY")
         # Initialize OpenAI client (kept as a secondary provider)
         self.openai_client = OpenAI(api_key=self.openai_api_key)
 
         if self.gemini_api_key:
-            logging.info(f"AI brain: Google Gemini active (model: {self.gemini_model})")
+            logging.info(f"AI brain: Google Gemini active (model: {self.gemini_model or 'auto'})")
         elif self.openai_api_key:
             logging.info("AI brain: OpenAI active")
         else:
@@ -65,6 +69,57 @@ class FreeAISystem:
             'emotion': ['triste', 'sad', 'heureux', 'happy', 'énervé', 'angry', 'fatigué', 'tired']
         }
         
+    def _resolve_gemini_model(self) -> Optional[str]:
+        """Demande à l'API la liste des modèles disponibles pour la clé et en choisit un
+        qui supporte generateContent (en privilégiant un modèle 'flash'). Résultat mis en cache."""
+        if self._gemini_resolved_model:
+            return self._gemini_resolved_model
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models?key={self.gemini_api_key}"
+            resp = requests.get(url, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
+            usable = []
+            for m in data.get("models", []):
+                methods = m.get("supportedGenerationMethods", [])
+                if "generateContent" in methods:
+                    short = m.get("name", "").split("/")[-1]
+                    if short:
+                        usable.append(short)
+
+            def is_text_flash(n: str) -> bool:
+                bad = ("vision", "embedding", "aqa", "imagen", "tts", "image", "audio")
+                return "flash" in n and not any(b in n for b in bad)
+
+            chosen = None
+            # 1) override manuel s'il est dispo
+            if self.gemini_model and self.gemini_model in usable:
+                chosen = self.gemini_model
+            # 2) préférences explicites
+            if not chosen:
+                for pref in ("gemini-2.0-flash", "gemini-2.5-flash", "gemini-flash-latest"):
+                    if pref in usable:
+                        chosen = pref
+                        break
+            # 3) n'importe quel modèle flash texte
+            if not chosen:
+                flashes = [n for n in usable if is_text_flash(n)]
+                if flashes:
+                    chosen = flashes[0]
+            # 4) dernier recours : premier modèle utilisable
+            if not chosen and usable:
+                chosen = usable[0]
+
+            if chosen:
+                self._gemini_resolved_model = chosen
+                logging.info(f"Gemini: modele selectionne automatiquement = {chosen}")
+            else:
+                logging.error(f"Gemini: aucun modele generateContent disponible. Liste: {usable[:15]}")
+            return self._gemini_resolved_model
+        except Exception as e:
+            logging.error(f"Gemini ListModels error: {e}")
+            return None
+
     def _generate_gemini_response(self, content: str, user_name: str, context: Dict, guild_info: Dict) -> str:
         """Génère une réponse avec Google Gemini (API REST gratuite)."""
         system_prompt = self._create_popocorps_system_prompt(context, guild_info)
@@ -103,10 +158,17 @@ class FreeAISystem:
             ],
         }
 
-        # Essaie le modèle configuré, puis les modèles de repli si 404
-        models_to_try = [self.gemini_model] + [
-            m for m in self.gemini_fallback_models if m != self.gemini_model
-        ]
+        # Choisit un modèle disponible (découverte auto), avec repli sur une liste statique
+        models_to_try = []
+        resolved = self._resolve_gemini_model()
+        if resolved:
+            models_to_try.append(resolved)
+        if self.gemini_model and self.gemini_model not in models_to_try:
+            models_to_try.append(self.gemini_model)
+        for m in self.gemini_fallback_models:
+            if m not in models_to_try:
+                models_to_try.append(m)
+
         last_error = None
         for model in models_to_try:
             url = (
@@ -117,6 +179,8 @@ class FreeAISystem:
                 resp = requests.post(url, json=payload, timeout=20)
                 if resp.status_code == 404:
                     last_error = f"modele {model} introuvable (404)"
+                    if model == self._gemini_resolved_model:
+                        self._gemini_resolved_model = None  # forcer une nouvelle découverte
                     continue
                 resp.raise_for_status()
                 data = resp.json()
