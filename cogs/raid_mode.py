@@ -18,6 +18,15 @@ from utils.spam_detector import (
     get_spammer_ids
 )
 
+_LOCK_PERMISSION_KEYS = (
+    "send_messages",
+    "send_messages_in_threads",
+    "create_public_threads",
+    "create_private_threads",
+    "add_reactions",
+)
+
+
 class RaidMode(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -43,18 +52,130 @@ class RaidMode(commands.Cog):
 
     def _validate_raid_setup(self, guild: discord.Guild) -> str | None:
         """Retourne un message d'erreur si la config est incomplete."""
-        if not self.get_member_role(guild):
-            return (
-                "⚠️ Aucun **rôle membre** configuré. Lance `/setup` pour définir "
-                "le rôle membre (nécessaire au verrouillage des salons)."
-            )
         if not guild.me.guild_permissions.manage_channels:
             return "⚠️ Il me manque la permission **Gérer les salons** pour verrouiller les canaux."
         return None
 
+    def _get_exempt_role_ids(self, guild: discord.Guild) -> set[int]:
+        """Roles autorises a parler pendant le mode raid (staff)."""
+        exempt = set()
+        admin_role_id = guild_settings.get_admin_role(guild.id)
+        if admin_role_id:
+            exempt.add(admin_role_id)
+        if guild.me.top_role:
+            exempt.add(guild.me.top_role.id)
+        return exempt
+
+    def _is_raid_staff(self, member: discord.Member) -> bool:
+        """Membres autorises a parler pendant le mode raid."""
+        if member.id == member.guild.owner_id:
+            return True
+        if member.guild_permissions.administrator:
+            return True
+        admin_role_id = guild_settings.get_admin_role(member.guild.id)
+        if admin_role_id and any(r.id == admin_role_id for r in member.roles):
+            return True
+        return False
+
+    def _get_roles_to_lock_for_channel(
+        self, guild: discord.Guild, channel: discord.TextChannel
+    ) -> set[int]:
+        """Roles a bloquer sur un salon.
+
+        Discord combine les permissions de TOUS les roles d'un membre.
+        Bloquer uniquement @everyone ne suffit PAS : si un role superieur
+        accorde send_messages (au niveau serveur ou salon), le membre peut
+        encore ecrire. Il faut un deny explicite sur chaque role concerne.
+        """
+        exempt = self._get_exempt_role_ids(guild)
+        to_lock: set[int] = set()
+
+        # Bloquer tous les roles du serveur (y compris @everyone)
+        for role in guild.roles:
+            if role.id in exempt:
+                continue
+            if role >= guild.me.top_role:
+                continue
+            if role.permissions.administrator:
+                continue
+            to_lock.add(role.id)
+
+        # Roles avec allow explicite sur CE salon (contournent un deny @everyone)
+        for target, overwrite in channel.overwrites.items():
+            if not isinstance(target, discord.Role):
+                continue
+            if target.id in exempt or target >= guild.me.top_role:
+                continue
+            if target.permissions.administrator:
+                continue
+            if overwrite.send_messages is True or overwrite.send_messages_in_threads is True:
+                to_lock.add(target.id)
+
+        return to_lock
+
+    def _snapshot_channel_overwrite(self, overwrite: discord.PermissionOverwrite) -> dict:
+        return {key: getattr(overwrite, key) for key in _LOCK_PERMISSION_KEYS}
+
+    async def _lock_channel_for_raid(
+        self, guild: discord.Guild, channel: discord.TextChannel
+    ) -> dict:
+        """Verrouille un salon pour tous les roles non-staff."""
+        state = {"roles": {}}
+        for role_id in self._get_roles_to_lock_for_channel(guild, channel):
+            role = guild.get_role(role_id)
+            if not role:
+                continue
+            current = channel.overwrites_for(role)
+            state["roles"][str(role_id)] = self._snapshot_channel_overwrite(current)
+            merged = discord.PermissionOverwrite(**current._values)
+            for key in _LOCK_PERMISSION_KEYS:
+                setattr(merged, key, False)
+            await channel.set_permissions(role, overwrite=merged, reason="Mode raid active")
+        return state
+
+    async def _unlock_channel_from_raid(
+        self,
+        guild: discord.Guild,
+        channel: discord.TextChannel,
+        state: dict,
+    ):
+        """Restaure les permissions d'un salon apres le mode raid."""
+        roles_state = state.get("roles")
+        if roles_state:
+            for role_id_str, perms in roles_state.items():
+                role = guild.get_role(int(role_id_str))
+                if not role:
+                    continue
+                current = channel.overwrites_for(role)
+                merged = discord.PermissionOverwrite(**current._values)
+                for key in _LOCK_PERMISSION_KEYS:
+                    if key in perms:
+                        setattr(merged, key, perms[key])
+                await channel.set_permissions(
+                    role, overwrite=merged, reason="Mode raid desactive"
+                )
+            return
+
+        # Ancien format (une seule entree role_id)
+        role_id = state.get("role_id")
+        role = guild.get_role(role_id) if role_id else self.get_member_role(guild)
+        if not role:
+            return
+        current = channel.overwrites_for(role)
+        merged = discord.PermissionOverwrite(**current._values)
+        for key in _LOCK_PERMISSION_KEYS:
+            if key in state:
+                setattr(merged, key, state[key])
+        await channel.set_permissions(role, overwrite=merged, reason="Mode raid desactive")
+
+    def _is_raid_exempt_channel(self, guild_id: int, channel_id: int) -> bool:
+        log_channel_id = guild_settings.get_log_channel(guild_id)
+        announcement_channel_id = guild_settings.get_announcement_channel(guild_id)
+        return channel_id in (log_channel_id, announcement_channel_id)
+
     @commands.Cog.listener()
     async def on_message(self, message):
-        """Suivi spam en mode raid + suppression automatique des flooders."""
+        """En mode raid : supprime tout message non-staff (filet de securite)."""
         if message.author.bot or not message.guild:
             return
 
@@ -62,10 +183,18 @@ class RaidMode(commands.Cog):
         if not self.raid_active.get(guild_id, False):
             return
 
-        track_message(message)
-
-        if message.author.id not in get_spammer_ids(guild_id):
+        if self._is_raid_staff(message.author):
+            track_message(message)
             return
+
+        if self._is_raid_exempt_channel(guild_id, message.channel.id):
+            try:
+                await message.delete()
+            except (discord.Forbidden, discord.NotFound):
+                pass
+            return
+
+        track_message(message)
 
         try:
             await message.delete()
@@ -75,14 +204,13 @@ class RaidMode(commands.Cog):
         member = message.author
         if (
             isinstance(member, discord.Member)
-            and not has_raid_mode_permission(member)
             and member.guild.me.guild_permissions.moderate_members
-            and (member.top_role < member.guild.me.top_role)
+            and member.top_role < member.guild.me.top_role
         ):
             try:
                 await member.timeout(
                     timedelta(minutes=10),
-                    reason="Spam détecté pendant le mode raid",
+                    reason="Message envoye pendant le mode raid",
                 )
             except (discord.Forbidden, discord.HTTPException):
                 pass
@@ -211,10 +339,10 @@ class RaidMode(commands.Cog):
             embed.add_field(
                 name="Pendant le mode raid",
                 value=(
-                    "• Verrouillage des salons pour le rôle membre\n"
-                    "• Pause des invitations\n"
-                    "• Suppression auto des messages de spammeurs\n"
-                    "• Timeout 10 min des comptes floodant"
+                    "• Verrouillage **@everyone** + tous les rôles membres\n"
+                    "• Seul le **rôle admin** (/setup) peut encore écrire\n"
+                    "• Suppression auto de tout message non-staff\n"
+                    "• Timeout 10 min si quelqu'un contourne le lock"
                 ),
                 inline=False,
             )
@@ -315,47 +443,49 @@ class RaidMode(commands.Cog):
                     content=f"✅ Scan terminé — {total_unique_spammers} menace(s) détectée(s). Verrouillage..."
                 )
 
-            member_role = self.get_member_role(interaction.guild)
-            if not member_role:
-                self.raid_active[guild_id] = False
-                self.save_raid_state(guild_id)
-                if not auto_mode:
-                    await interaction.followup.send(
-                        "❌ Rôle membre non configuré. Utilise `/setup`.", ephemeral=True
-                    )
-                return
-
             self.channel_states[guild_id] = {}
             self.invite_states[guild_id] = {}
             log_channel_id = guild_settings.get_log_channel(guild_id)
             announcement_channel_id = guild_settings.get_announcement_channel(guild_id)
+            roles_locked = len(
+                self._get_roles_to_lock_for_channel(
+                    interaction.guild, interaction.guild.text_channels[0]
+                )
+            ) if interaction.guild.text_channels else 0
 
             locked = 0
             for channel in interaction.guild.text_channels:
-                if channel.id in (log_channel_id, announcement_channel_id):
+                if self._is_raid_exempt_channel(guild_id, channel.id):
                     continue
                 try:
-                    current_perms = channel.overwrites_for(member_role)
-                    self.channel_states[guild_id][channel.id] = {
-                        'role_id': member_role.id,
-                        'send_messages': current_perms.send_messages,
-                        'send_messages_in_threads': current_perms.send_messages_in_threads,
-                        'create_public_threads': current_perms.create_public_threads,
-                        'create_private_threads': current_perms.create_private_threads,
-                        'add_reactions': current_perms.add_reactions,
-                    }
-                    new_perms = discord.PermissionOverwrite()
-                    new_perms.send_messages = False
-                    new_perms.send_messages_in_threads = False
-                    new_perms.create_public_threads = False
-                    new_perms.create_private_threads = False
-                    new_perms.add_reactions = False
-                    await channel.set_permissions(member_role, overwrite=new_perms)
+                    self.channel_states[guild_id][channel.id] = await self._lock_channel_for_raid(
+                        interaction.guild, channel
+                    )
                     locked += 1
                 except discord.Forbidden:
                     logging.warning("Pas la permission sur le salon %s", channel.name)
                 except Exception as e:
                     logging.error("Erreur verrouillage %s: %s", channel.name, e)
+
+            admin_role_id = guild_settings.get_admin_role(guild_id)
+            if admin_role_id:
+                admin_role = interaction.guild.get_role(admin_role_id)
+                if admin_role:
+                    for channel in interaction.guild.text_channels:
+                        if self._is_raid_exempt_channel(guild_id, channel.id):
+                            continue
+                        try:
+                            current = channel.overwrites_for(admin_role)
+                            merged = discord.PermissionOverwrite(**current._values)
+                            merged.send_messages = True
+                            merged.send_messages_in_threads = True
+                            await channel.set_permissions(
+                                admin_role,
+                                overwrite=merged,
+                                reason="Staff autorise pendant le mode raid",
+                            )
+                        except discord.Forbidden:
+                            pass
 
             self.invite_states[guild_id] = {'invites_paused': False}
             if interaction.guild.me.guild_permissions.manage_guild:
@@ -377,7 +507,10 @@ class RaidMode(commands.Cog):
             if auto_reason:
                 title = "🚨 MODE RAID AUTO-ACTIVÉ 🚨"
             description = (
-                f"**{locked}** salon(s) verrouillé(s) pour {member_role.mention}. "
+                f"**{locked}** salon(s) verrouillé(s).\n"
+                f"**{roles_locked}** rôles bloqués par salon (@everyone + tous les rôles "
+                "membres, y compris ceux au-dessus de @everyone).\n"
+                "Seul le **rôle admin** (/setup) peut encore écrire.\n"
                 "Les invitations sont suspendues."
             )
             if auto_reason:
@@ -474,27 +607,13 @@ class RaidMode(commands.Cog):
                     channel = interaction.guild.get_channel(channel_id)
                     if not channel:
                         continue
-
-                    role_id = permissions.get('role_id')
-                    role = interaction.guild.get_role(role_id) if role_id else self.get_member_role(interaction.guild)
-                    if not role:
-                        continue
-
-                    current_perms = channel.overwrites_for(role)
-                    new_perms = discord.PermissionOverwrite(**current_perms._values)
-                    for key in (
-                        'send_messages',
-                        'send_messages_in_threads',
-                        'create_public_threads',
-                        'create_private_threads',
-                        'add_reactions',
-                    ):
-                        if key in permissions:
-                            setattr(new_perms, key, permissions[key])
-                    await channel.set_permissions(role, overwrite=new_perms)
-
+                    await self._unlock_channel_from_raid(
+                        interaction.guild, channel, permissions
+                    )
                     processed_channels += 1
-                    if total_channels and (processed_channels % 5 == 0 or processed_channels == total_channels):
+                    if total_channels and (
+                        processed_channels % 5 == 0 or processed_channels == total_channels
+                    ):
                         progress_percentage = int((processed_channels / total_channels) * 100)
                         await progress_message.edit(
                             content=f"🔓 Désactivation du mode raid... ({progress_percentage}%)"
@@ -600,7 +719,8 @@ class RaidMode(commands.Cog):
                 title="🚨 Statut du mode raid",
                 description=(
                     "**Mode raid ACTIF**\n"
-                    "Les salons sont verrouillés pour le rôle membre. "
+                    "Tous les membres sont bloqués (@everyone + rôles). "
+                    "Seul le staff (rôle admin) peut écrire. "
                     "Les invitations sont suspendues."
                 ),
                 color=discord.Color.red(),
@@ -652,7 +772,7 @@ class RaidMode(commands.Cog):
         if member_role:
             config_lines.append(f"👥 Membre : {member_role.mention}")
         else:
-            config_lines.append("👥 Membre : **non configuré** (requis pour `/raid on`)")
+            config_lines.append("👥 Membre : non configuré (optionnel, @everyone est toujours bloqué)")
 
         auto_raid = guild_settings.get_setting(guild_id, "auto_raid_enabled", False)
         config_lines.append(f"🤖 Auto-raid : {'activé' if auto_raid else 'désactivé'}")
@@ -661,10 +781,10 @@ class RaidMode(commands.Cog):
         )
 
         embed.add_field(name="Configuration", value="\n".join(config_lines), inline=False)
-        if not member_role or not log_channel_id:
+        if not log_channel_id:
             embed.add_field(
                 name="Action requise",
-                value="Lance `/setup` pour configurer le serveur avant d'utiliser le mode raid.",
+                value="Configure au minimum un salon **logs** via `/setup`.",
                 inline=False,
             )
 
