@@ -2,14 +2,14 @@ import discord
 from discord.ext import commands
 import logging
 from datetime import datetime, timezone
-from utils.guild_settings import GuildSettings
+from utils.guild_settings import guild_settings
 from utils.translations import get_text, create_embed
 import asyncio
 
 class AuditLogger(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.guild_settings = GuildSettings()
+        self.guild_settings = guild_settings
 
     async def send_log(self, guild, embed, critical=False, alert_reason=None):
         """Send log message to the configured log channel"""

@@ -1,5 +1,6 @@
 import os
 import hmac
+import logging
 import secrets as secrets_module
 from urllib.parse import urlencode
 import requests
@@ -14,7 +15,7 @@ import asyncio
 import threading
 import json
 from models import Warning, get_db_session, engine, DATABASE_URL
-from utils.guild_settings import GuildSettings
+from utils.guild_settings import guild_settings
 
 app = Flask(__name__)
 app.secret_key = (
@@ -35,9 +36,6 @@ app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
 # Initialize SQLAlchemy with Flask
 db = SQLAlchemy(app)
 
-# Initialize guild settings
-guild_settings = GuildSettings()
-
 # Global bot reference (will be set by the Discord bot)
 discord_bot = None
 
@@ -54,23 +52,31 @@ DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD")
 DISCORD_CLIENT_ID = os.environ.get("DISCORD_CLIENT_ID")
 DISCORD_CLIENT_SECRET = os.environ.get("DISCORD_CLIENT_SECRET")
 DISCORD_API_BASE = "https://discord.com/api"
+logger = logging.getLogger(__name__)
 
 # Endpoints accessibles sans authentification
-PUBLIC_ENDPOINTS = {"login", "auth_discord", "oauth_callback", "logout", "static"}
+PUBLIC_ENDPOINTS = {"login", "auth_discord", "oauth_callback", "oauth_setup", "logout", "static"}
 
 
 def _dashboard_ready():
     """Le dashboard n'est utilisable que si l'auth est entierement configuree."""
-    return bool(DASHBOARD_PASSWORD and DISCORD_CLIENT_ID and DISCORD_CLIENT_SECRET)
+    return bool(
+        DASHBOARD_PASSWORD
+        and DISCORD_CLIENT_ID
+        and DISCORD_CLIENT_SECRET
+        and os.environ.get("DASHBOARD_BASE_URL", "").strip()
+    )
 
 
 def _oauth_redirect_uri():
-    """Construit l'URL de redirection OAuth (force https, gere le proxy Railway)."""
-    base = os.environ.get("DASHBOARD_BASE_URL")
-    if base:
-        return base.rstrip("/") + "/callback"
-    host = request.headers.get("X-Forwarded-Host", request.host)
-    return f"https://{host}/callback"
+    """Construit l'URL de redirection OAuth (doit correspondre EXACTEMENT au portail Discord)."""
+    base = os.environ.get("DASHBOARD_BASE_URL", "").strip().rstrip("/")
+    if not base:
+        host = request.headers.get("X-Forwarded-Host", request.host)
+        base = f"https://{host}".rstrip("/")
+    elif not base.startswith(("http://", "https://")):
+        base = f"https://{base}"
+    return f"{base}/callback"
 
 
 def _check_dashboard_access(user_id: int) -> str:
@@ -110,8 +116,8 @@ def _require_authentication():
         return None
     if not _dashboard_ready():
         return (
-            "Dashboard desactive : configure les variables DASHBOARD_PASSWORD, "
-            "DISCORD_CLIENT_ID et DISCORD_CLIENT_SECRET pour l'activer.",
+            "Dashboard desactive : configure DASHBOARD_PASSWORD, DISCORD_CLIENT_ID, "
+            "DISCORD_CLIENT_SECRET et DASHBOARD_BASE_URL (URL publique Railway, sans slash final).",
             503,
         )
     if session.get("authenticated"):
@@ -151,8 +157,8 @@ LOGIN_HTML = """
 def login():
     if not _dashboard_ready():
         return (
-            "Dashboard desactive : configure DASHBOARD_PASSWORD, DISCORD_CLIENT_ID "
-            "et DISCORD_CLIENT_SECRET.",
+            "Dashboard desactive : configure DASHBOARD_PASSWORD, DISCORD_CLIENT_ID, "
+            "DISCORD_CLIENT_SECRET et DASHBOARD_BASE_URL.",
             503,
         )
     if session.get("authenticated"):
@@ -172,15 +178,38 @@ def login():
     return render_template_string(LOGIN_HTML, error=error)
 
 
+@app.route("/oauth-setup")
+def oauth_setup():
+    """Affiche l'URI de redirection exacte a enregistrer dans le portail Discord."""
+    if not (DISCORD_CLIENT_ID and os.environ.get("DASHBOARD_BASE_URL", "").strip()):
+        return (
+            "Configure DASHBOARD_BASE_URL et DISCORD_CLIENT_ID sur Railway, puis recharge cette page.",
+            503,
+        )
+    redirect_uri = _oauth_redirect_uri()
+    return (
+        f"<h1>Configuration OAuth Discord</h1>"
+        f"<p>Ajoute <strong>exactement</strong> cette URL dans le portail Discord "
+        f"(OAuth2 → Redirects) :</p>"
+        f"<pre style='background:#eee;padding:12px;font-size:14px'>{redirect_uri}</pre>"
+        f"<p>Client ID : <code>{DISCORD_CLIENT_ID}</code></p>"
+        f"<p><a href='/login'>Retour connexion</a></p>",
+        200,
+        {"Content-Type": "text/html; charset=utf-8"},
+    )
+
+
 @app.route("/auth/discord")
 def auth_discord():
     if not _dashboard_ready() or not session.get("pw_ok"):
         return redirect(url_for("login"))
     state = secrets_module.token_urlsafe(24)
     session["oauth_state"] = state
+    redirect_uri = _oauth_redirect_uri()
+    logger.info("OAuth redirect_uri=%s client_id=%s", redirect_uri, DISCORD_CLIENT_ID)
     params = {
         "client_id": DISCORD_CLIENT_ID,
-        "redirect_uri": _oauth_redirect_uri(),
+        "redirect_uri": redirect_uri,
         "response_type": "code",
         "scope": "identify",
         "state": state,
@@ -739,10 +768,7 @@ def api_system_states():
     
     try:
         # Get guild settings instance from bot
-        guild_settings = getattr(discord_bot, 'guild_settings', None)
-        if not guild_settings:
-            from utils.guild_settings import GuildSettings
-            guild_settings = GuildSettings()
+        gs = getattr(discord_bot, 'guild_settings', None) or guild_settings
         
         # For now, return states for the first guild the bot is in
         guild_id = None
@@ -788,10 +814,7 @@ def api_toggle_system():
             return jsonify({"error": "Missing system or enabled parameter"}), 400
         
         # Get guild settings instance from bot
-        guild_settings = getattr(discord_bot, 'guild_settings', None)
-        if not guild_settings:
-            from utils.guild_settings import GuildSettings
-            guild_settings = GuildSettings()
+        gs = getattr(discord_bot, 'guild_settings', None) or guild_settings
         
         # For now, use the first guild the bot is in
         guild_id = None

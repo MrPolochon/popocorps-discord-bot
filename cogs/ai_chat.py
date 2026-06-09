@@ -7,7 +7,7 @@ import os
 import json
 import asyncio
 from datetime import datetime, timezone
-from utils.guild_settings import GuildSettings
+from utils.guild_settings import guild_settings
 from utils.translations import get_text
 from utils.free_ai_system import FreeAISystem
 
@@ -16,7 +16,7 @@ class AIChatSystem(commands.Cog):
     
     def __init__(self, bot):
         self.bot = bot
-        self.guild_settings = GuildSettings()
+        self.guild_settings = guild_settings
         
         # Initialize Free AI System
         self.free_ai = FreeAISystem()

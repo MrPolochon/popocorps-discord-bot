@@ -5,14 +5,14 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict, deque
 from utils.spam_detector import track_message, get_spammer_ids, reset_tracking
-from utils.guild_settings import GuildSettings
+from utils.guild_settings import guild_settings
 
 class ContinuousSpamMonitor(commands.Cog):
     """24/7 spam detection and monitoring system"""
     
     def __init__(self, bot):
         self.bot = bot
-        self.guild_settings = GuildSettings()
+        self.guild_settings = guild_settings
         
         # 24/7 monitoring data structures
         self.message_tracking = defaultdict(lambda: deque(maxlen=100))  # Recent messages per guild

@@ -1,7 +1,7 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
-from utils.guild_settings import GuildSettings
+from utils.guild_settings import guild_settings
 from datetime import datetime, timezone
 import asyncio
 
@@ -9,7 +9,7 @@ class SetupView(discord.ui.View):
     def __init__(self, guild_id):
         super().__init__(timeout=300)
         self.guild_id = guild_id
-        self.guild_settings = GuildSettings()
+        self.guild_settings = guild_settings
         self.current_step = 0
         self.setup_data = {}
         
@@ -415,7 +415,7 @@ class SetupView(discord.ui.View):
 class SetupSystem(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.guild_settings = GuildSettings()
+        self.guild_settings = guild_settings
 
     @app_commands.command(name="setup", description="Configuration interactive complète du bot")
     async def setup_command(self, interaction: discord.Interaction):
@@ -491,6 +491,7 @@ class SetupSystem(commands.Cog):
     async def view_configuration(self, interaction):
         """View current configuration"""
         guild_id = interaction.guild.id
+        self.guild_settings.reload_guild_settings(guild_id)
         
         embed = discord.Embed(
             title="📋 Configuration Actuelle",
@@ -616,7 +617,7 @@ class ResetConfirmView(discord.ui.View):
     def __init__(self, guild_id):
         super().__init__(timeout=60)
         self.guild_id = guild_id
-        self.guild_settings = GuildSettings()
+        self.guild_settings = guild_settings
 
     @discord.ui.button(label="✅ Confirmer Reset", style=discord.ButtonStyle.danger)
     async def confirm_reset(self, interaction: discord.Interaction, button: discord.ui.Button):

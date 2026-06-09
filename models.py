@@ -41,6 +41,18 @@ class Directive(Base):
     def __repr__(self):
         return f"<Directive(guild_id={self.guild_id}, trigger='{self.trigger}', action='{self.action}', role_id={self.role_id})>"
 
+
+class GuildConfig(Base):
+    """Configuration par serveur Discord (setup, bienvenue, etc.)."""
+    __tablename__ = 'guild_configs'
+
+    guild_id = Column(BigInteger, primary_key=True)
+    settings = Column(Text, nullable=False, default='{}')  # JSON
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<GuildConfig(guild_id={self.guild_id})>"
+
 # Database setup
 DATABASE_URL = os.environ.get('DATABASE_URL')
 if not DATABASE_URL:
